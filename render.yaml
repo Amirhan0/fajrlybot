@@ -1,6 +1,6 @@
 services:
   - type: worker
-    name: my-python-bot
+    name: islamic-bot-worker
     env: python
     plan: free
     pythonVersion: 3.12

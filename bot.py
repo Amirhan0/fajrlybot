@@ -9,6 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import asyncio
 import os
+import time
 from dotenv import load_dotenv
 from database import Database
 from duas_data import get_duas_by_category, get_all_categories, search_duas
@@ -135,39 +136,132 @@ class IslamicBot:
 
     def get_next_prayer(self, times):
         """Определение следующего намаза"""
-        now = datetime.now().strftime("%H:%M")
+        now = datetime.now()
         prayer_names = ['Фаджр', 'Зухр', 'Аср', 'Магриб', 'Иша']
         
-        for prayer in prayer_names:
-            prayer_time = times.get(prayer, '')
-            if prayer_time > now:
-                return f"{prayer} в {prayer_time}"
+        next_prayer = None
+        min_time_diff = None
         
-        return f"Фаджр в {times.get('Фаджр', '')}"
+        # Проверяем каждый намаз и находим ближайший
+        for prayer in prayer_names:
+            prayer_time_str = times.get(prayer, '')
+            if not prayer_time_str:
+                continue
+            
+            try:
+                prayer_hour, prayer_minute = map(int, prayer_time_str.split(':'))
+                prayer_datetime = now.replace(hour=prayer_hour, minute=prayer_minute, second=0, microsecond=0)
+                
+                # Если намаз уже прошел сегодня, проверяем следующий день
+                if prayer_datetime <= now:
+                    prayer_datetime += timedelta(days=1)
+                
+                # Вычисляем разницу во времени
+                time_diff = (prayer_datetime - now).total_seconds()
+                
+                # Если это ближайший намаз, сохраняем его
+                if min_time_diff is None or time_diff < min_time_diff:
+                    min_time_diff = time_diff
+                    next_prayer = (prayer, prayer_time_str, prayer_datetime)
+            except (ValueError, AttributeError):
+                continue
+        
+        if next_prayer:
+            prayer_name, prayer_time_str, prayer_datetime = next_prayer
+            # Если намаз завтра, добавляем пометку
+            if prayer_datetime.date() > now.date():
+                return f"{prayer_name} в {prayer_time_str} (завтра)"
+            else:
+                return f"{prayer_name} в {prayer_time_str}"
+        
+        return None
 
     async def set_city(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Установка города пользователя"""
         user_id = update.effective_user.id
         
-        if not context.args:
-            await update.message.reply_text(
-                "Укажите город:\n/setcity Алматы"
-            )
+        # Если есть аргументы, обрабатываем напрямую
+        if context.args:
+            city = ' '.join(context.args)
+            await self.set_user_city(user_id, city, update)
             return
         
-        city = ' '.join(context.args)
+        # Показываем кнопки с популярными городами
+        keyboard = [
+            [
+                InlineKeyboardButton("🏙 Алматы", callback_data="set_city_Almaty"),
+                InlineKeyboardButton("🏛 Астана", callback_data="set_city_Astana")
+            ],
+            [
+                InlineKeyboardButton("🌊 Шымкент", callback_data="set_city_Shymkent"),
+                InlineKeyboardButton("🏭 Караганда", callback_data="set_city_Karaganda")
+            ],
+            [
+                InlineKeyboardButton("🌉 Актобе", callback_data="set_city_Aktobe"),
+                InlineKeyboardButton("🏔 Тараз", callback_data="set_city_Taraz")
+            ],
+            [
+                InlineKeyboardButton("🌆 Павлодар", callback_data="set_city_Pavlodar"),
+                InlineKeyboardButton("🏘 Усть-Каменогорск", callback_data="set_city_Oskemen")
+            ],
+            [
+                InlineKeyboardButton("✏️ Ввести другой город", callback_data="set_city_input")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "🏙 Выберите ваш город или введите другой:",
+            reply_markup=reply_markup
+        )
+    
+    async def set_user_city(self, user_id, city, update_or_query):
+        """Установить город пользователя (общая функция)"""
+        # Нормализуем название города для API
+        city_mapping = {
+            'алматы': 'Almaty',
+            'алмата': 'Almaty',
+            'астана': 'Astana',
+            'нур-султан': 'Astana',
+            'шымкент': 'Shymkent',
+            'караганда': 'Karaganda',
+            'актобе': 'Aktobe',
+            'тараз': 'Taraz',
+            'павлодар': 'Pavlodar',
+            'усть-каменогорск': 'Oskemen',
+            'oskemen': 'Oskemen',
+            'almaty': 'Almaty',
+            'astana': 'Astana',
+            'shymkent': 'Shymkent',
+            'karaganda': 'Karaganda',
+            'aktobe': 'Aktobe',
+            'taraz': 'Taraz',
+            'pavlodar': 'Pavlodar'
+        }
+        
+        city_lower = city.lower().strip()
+        normalized_city = city_mapping.get(city_lower, city)
         country = "Kazakhstan"
         
         # Сохраняем в БД
-        await self.db.update_user_city(user_id, city, country)
+        await self.db.update_user_city(user_id, normalized_city, country)
         
-        await update.message.reply_text(
-            f"✅ Город установлен: {city}\n\n"
+        message = (
+            f"✅ Город установлен: {normalized_city}\n\n"
             f"Теперь вы можете узнать время намазов, нажав на кнопку '🕌 Время намаза'"
         )
         
+        # Отправляем ответ в зависимости от типа обновления
+        if hasattr(update_or_query, 'edit_message_text'):
+            # Это callback query
+            await update_or_query.answer()
+            await update_or_query.edit_message_text(message)
+        else:
+            # Это обычное сообщение
+            await update_or_query.message.reply_text(message)
+        
         # Планируем напоминания
-        await self.schedule_prayer_notifications(user_id, city, country)
+        await self.schedule_prayer_notifications(user_id, normalized_city, country)
 
     async def schedule_prayer_notifications(self, user_id, city, country):
         """Планирование напоминаний о намазах"""
@@ -298,10 +392,26 @@ class IslamicBot:
         stats = await self.db.get_prayer_stats(user_id, days=30)
         
         if not stats:
+            # Показываем кнопки для отметки намаза
+            keyboard = [
+                [
+                    InlineKeyboardButton("🌅 Фаджр", callback_data="mark_prayer_Фаджр"),
+                    InlineKeyboardButton("☀️ Зухр", callback_data="mark_prayer_Зухр")
+                ],
+                [
+                    InlineKeyboardButton("🌤 Аср", callback_data="mark_prayer_Аср"),
+                    InlineKeyboardButton("🌆 Магриб", callback_data="mark_prayer_Магриб")
+                ],
+                [
+                    InlineKeyboardButton("🌙 Иша", callback_data="mark_prayer_Иша")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
             await update.message.reply_text(
                 "📊 У вас пока нет статистики намазов.\n\n"
-                "Нажмите /markprayer после намаза чтобы отметить его выполненным.\n"
-                "Например: /markprayer Фаджр"
+                "Выберите намаз, который вы выполнили:",
+                reply_markup=reply_markup
             )
             return
         
@@ -338,8 +448,17 @@ class IslamicBot:
         
         # Кнопки
         keyboard = [
-            [InlineKeyboardButton("🔔 Отметить намаз", callback_data="mark_prayer")],
-            [InlineKeyboardButton("👥 Сравнить с друзьями", callback_data="compare_friends")]
+            [
+                InlineKeyboardButton("🌅 Фаджр", callback_data="mark_prayer_Фаджр"),
+                InlineKeyboardButton("☀️ Зухр", callback_data="mark_prayer_Зухр")
+            ],
+            [
+                InlineKeyboardButton("🌤 Аср", callback_data="mark_prayer_Аср"),
+                InlineKeyboardButton("🌆 Магриб", callback_data="mark_prayer_Магриб")
+            ],
+            [
+                InlineKeyboardButton("🌙 Иша", callback_data="mark_prayer_Иша")
+            ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -390,28 +509,37 @@ class IslamicBot:
         """Отметить намаз как выполненный"""
         user_id = update.effective_user.id
         
-        if not context.args:
-            await update.message.reply_text(
-                "Укажите название намаза:\n"
-                "/markprayer Фаджр\n"
-                "/markprayer Зухр\n"
-                "/markprayer Аср\n"
-                "/markprayer Магриб\n"
-                "/markprayer Иша"
-            )
-            return
+        # Если есть аргументы, обрабатываем напрямую
+        if context.args:
+            prayer_name = ' '.join(context.args)
+            valid_prayers = ['Фаджр', 'Зухр', 'Аср', 'Магриб', 'Иша']
+            if prayer_name in valid_prayers:
+                await self.mark_prayer_completed(user_id, prayer_name, update)
+                return
         
-        prayer_name = ' '.join(context.args)
+        # Показываем кнопки для выбора намаза
+        keyboard = [
+            [
+                InlineKeyboardButton("🌅 Фаджр", callback_data="mark_prayer_Фаджр"),
+                InlineKeyboardButton("☀️ Зухр", callback_data="mark_prayer_Зухр")
+            ],
+            [
+                InlineKeyboardButton("🌤 Аср", callback_data="mark_prayer_Аср"),
+                InlineKeyboardButton("🌆 Магриб", callback_data="mark_prayer_Магриб")
+            ],
+            [
+                InlineKeyboardButton("🌙 Иша", callback_data="mark_prayer_Иша")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Проверяем правильность названия
-        valid_prayers = ['Фаджр', 'Зухр', 'Аср', 'Магриб', 'Иша']
-        if prayer_name not in valid_prayers:
-            await update.message.reply_text(
-                f"❌ Неверное название намаза.\n"
-                f"Доступные: {', '.join(valid_prayers)}"
-            )
-            return
-        
+        await update.message.reply_text(
+            "📿 Выберите намаз, который вы выполнили:",
+            reply_markup=reply_markup
+        )
+    
+    async def mark_prayer_completed(self, user_id, prayer_name, update_or_query):
+        """Отметить намаз как выполненный (общая функция)"""
         # Отмечаем в БД
         await self.db.mark_prayer_completed(user_id, prayer_name)
         
@@ -430,7 +558,14 @@ class IslamicBot:
             elif streak == 100:
                 message += "\n👑 Невероятно! 100 дней подряд!"
         
-        await update.message.reply_text(message)
+        # Отправляем ответ в зависимости от типа обновления
+        if hasattr(update_or_query, 'edit_message_text'):
+            # Это callback query
+            await update_or_query.answer()
+            await update_or_query.edit_message_text(message)
+        else:
+            # Это обычное сообщение
+            await update_or_query.message.reply_text(message)
 
     async def find_mosques(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Найти ближайшие мечети"""
@@ -567,6 +702,27 @@ class IslamicBot:
                 "Здесь собраны дуа на все случаи жизни",
                 reply_markup=reply_markup
             )
+        elif query.data.startswith("mark_prayer_"):
+            # Обработка отметки намаза
+            prayer_name = query.data.replace("mark_prayer_", "")
+            user_id = update.effective_user.id
+            await self.mark_prayer_completed(user_id, prayer_name, query)
+        elif query.data.startswith("set_city_"):
+            # Обработка выбора города
+            city_data = query.data.replace("set_city_", "")
+            user_id = update.effective_user.id
+            
+            if city_data == "input":
+                # Пользователь хочет ввести город вручную
+                await query.answer()
+                await query.edit_message_text(
+                    "✏️ Введите название города:\n\n"
+                    "Например: Алматы, Астана, Шымкент и т.д.\n\n"
+                    "Или используйте команду: /setcity [название города]"
+                )
+            else:
+                # Город выбран из списка
+                await self.set_user_city(user_id, city_data, query)
 
     async def toggle_notifications(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Включение/выключение уведомлений"""
@@ -585,12 +741,23 @@ class IslamicBot:
 
     async def post_init(self, application: Application) -> None:
         """Инициализация после запуска"""
-        # Очистка webhook перед запуском polling
-        try:
-            await application.bot.delete_webhook(drop_pending_updates=True)
-            logger.info("Webhook очищен перед запуском polling")
-        except Exception as e:
-            logger.warning(f"Не удалось очистить webhook: {e}")
+        # Очистка webhook перед запуском polling с несколькими попытками
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                await application.bot.delete_webhook(drop_pending_updates=True)
+                logger.info("Webhook успешно очищен перед запуском polling")
+                break
+            except Conflict as e:
+                logger.warning(f"Конфликт при очистке webhook (попытка {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)  # Экспоненциальная задержка
+                else:
+                    logger.error("Не удалось очистить webhook после всех попыток")
+            except Exception as e:
+                logger.warning(f"Ошибка при очистке webhook (попытка {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1)
         
         await self.db.init_db()
         self.scheduler.start()
@@ -603,6 +770,13 @@ class IslamicBot:
         if isinstance(context.error, Conflict):
             logger.warning("Обнаружен конфликт: другой экземпляр бота уже запущен. "
                           "Убедитесь, что запущен только один экземпляр.")
+            # Пытаемся очистить webhook и подождать перед повторной попыткой
+            try:
+                await asyncio.sleep(5)
+                await self.app.bot.delete_webhook(drop_pending_updates=True)
+                logger.info("Webhook очищен после конфликта")
+            except Exception as e:
+                logger.error(f"Не удалось очистить webhook после конфликта: {e}")
         elif isinstance(context.error, RetryAfter):
             logger.warning(f"Превышен лимит запросов. Повтор через {context.error.retry_after} секунд")
         elif isinstance(context.error, (TimedOut, NetworkError)):
@@ -629,11 +803,25 @@ class IslamicBot:
         self.app.add_error_handler(self.error_handler)
         
         logger.info("Бот запущен!")
-        self.app.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,
-            close_loop=False
-        )
+        # Используем run_polling с дополнительными параметрами для надежности
+        try:
+            self.app.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+                close_loop=False,
+                stop_signals=None  # Отключаем обработку сигналов для Render
+            )
+        except Conflict as e:
+            logger.error(f"Критический конфликт при запуске polling: {e}")
+            logger.info("Попытка повторного запуска через 10 секунд...")
+            time.sleep(10)
+            # Повторная попытка
+            self.app.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+                close_loop=False,
+                stop_signals=None
+            )
 
 if __name__ == '__main__':
     BOT_TOKEN = os.getenv('BOT_TOKEN')
