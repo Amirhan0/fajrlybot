@@ -1,6 +1,7 @@
 import logging
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram.error import Conflict, RetryAfter, TimedOut, NetworkError
 import requests
 from datetime import datetime, timedelta
 import pytz
@@ -584,9 +585,30 @@ class IslamicBot:
 
     async def post_init(self, application: Application) -> None:
         """Инициализация после запуска"""
+        # Очистка webhook перед запуском polling
+        try:
+            await application.bot.delete_webhook(drop_pending_updates=True)
+            logger.info("Webhook очищен перед запуском polling")
+        except Exception as e:
+            logger.warning(f"Не удалось очистить webhook: {e}")
+        
         await self.db.init_db()
         self.scheduler.start()
         logger.info("База данных и планировщик запущены!")
+    
+    async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработчик ошибок"""
+        logger.error(f"Ошибка при обработке обновления: {context.error}")
+        
+        if isinstance(context.error, Conflict):
+            logger.warning("Обнаружен конфликт: другой экземпляр бота уже запущен. "
+                          "Убедитесь, что запущен только один экземпляр.")
+        elif isinstance(context.error, RetryAfter):
+            logger.warning(f"Превышен лимит запросов. Повтор через {context.error.retry_after} секунд")
+        elif isinstance(context.error, (TimedOut, NetworkError)):
+            logger.warning("Ошибка сети. Бот продолжит работу.")
+        else:
+            logger.error(f"Необработанная ошибка: {context.error}", exc_info=context.error)
 
     def run(self):
         """Запуск бота"""
@@ -603,8 +625,15 @@ class IslamicBot:
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         
+        # Регистрация обработчика ошибок
+        self.app.add_error_handler(self.error_handler)
+        
         logger.info("Бот запущен!")
-        self.app.run_polling(allowed_updates=Update.ALL_TYPES)
+        self.app.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
+            close_loop=False
+        )
 
 if __name__ == '__main__':
     BOT_TOKEN = os.getenv('BOT_TOKEN')
