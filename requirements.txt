@@ -2,7 +2,6 @@ python-telegram-bot==20.7
 APScheduler==3.10.4
 requests==2.31.0
 pytz==2023.3
-asyncpg==0.29.0
 aiosqlite==0.19.0
 python-dotenv==1.0.0
 hijri-converter==2.3.1
