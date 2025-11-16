@@ -10,6 +10,8 @@ from apscheduler.triggers.cron import CronTrigger
 import asyncio
 import os
 import time
+from aiohttp import web, ClientSession, ClientTimeout
+from aiohttp.web import Response
 from dotenv import load_dotenv
 from database import Database
 from duas_data import get_duas_by_category, get_all_categories, search_duas
@@ -30,6 +32,8 @@ class IslamicBot:
         self.scheduler = AsyncIOScheduler(timezone=pytz.timezone('Asia/Almaty'))
         self.app = None
         self.db = Database()
+        self.http_server = None
+        self.keep_alive_task = None
         
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
@@ -739,6 +743,46 @@ class IslamicBot:
             status = "включены" if new_state else "выключены"
             await update.message.reply_text(f"✅ Уведомления {status}")
 
+    async def health_check_handler(self, request):
+        """Обработчик health check запросов"""
+        return Response(text="OK", status=200)
+    
+    async def start_http_server(self):
+        """Запуск HTTP сервера для health check"""
+        try:
+            port = int(os.getenv('PORT', 8080))
+            app = web.Application()
+            app.router.add_get('/', self.health_check_handler)
+            app.router.add_get('/health', self.health_check_handler)
+            
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, '0.0.0.0', port)
+            await site.start()
+            
+            self.http_server = runner
+            logger.info(f"HTTP сервер запущен на порту {port}")
+        except Exception as e:
+            logger.error(f"Ошибка при запуске HTTP сервера: {e}")
+    
+    async def keep_alive_ping(self):
+        """Keep-alive механизм - пинг самого себя каждые 10 минут"""
+        try:
+            port = int(os.getenv('PORT', 8080))
+            url = f"http://localhost:{port}/health"
+            
+            while True:
+                await asyncio.sleep(600)  # 10 минут
+                try:
+                    async with ClientSession() as session:
+                        async with session.get(url, timeout=ClientTimeout(total=5)) as response:
+                            if response.status == 200:
+                                logger.debug("Keep-alive ping успешен")
+                except Exception as e:
+                    logger.warning(f"Keep-alive ping не удался: {e}")
+        except Exception as e:
+            logger.error(f"Ошибка в keep-alive механизме: {e}")
+    
     async def post_init(self, application: Application) -> None:
         """Инициализация после запуска"""
         # Очистка webhook перед запуском polling с несколькими попытками
@@ -758,6 +802,12 @@ class IslamicBot:
                 logger.warning(f"Ошибка при очистке webhook (попытка {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
+        
+        # Запускаем HTTP сервер для health check
+        await self.start_http_server()
+        
+        # Запускаем keep-alive механизм
+        self.keep_alive_task = asyncio.create_task(self.keep_alive_ping())
         
         await self.db.init_db()
         self.scheduler.start()
