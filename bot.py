@@ -823,38 +823,22 @@ out center;
         """Инициализация после запуска"""
         logger.info("🚀 Начинаем инициализацию бота...")
         
-        # Агрессивная очистка webhook и logout
-        max_attempts = 5
-        for attempt in range(max_attempts):
-            try:
-                # Сначала пытаемся сделать logout
-                try:
-                    await application.bot.log_out()
-                    logger.info(f"✅ Bot logged out (попытка {attempt + 1})")
-                    await asyncio.sleep(3)
-                except Exception as e:
-                    logger.warning(f"LogOut не удался (это нормально): {e}")
-                
-                # Затем удаляем webhook
+        # Простая очистка webhook (без логаута, так как это вызывает проблемы)
+        try:
+            # Проверяем текущий webhook
+            webhook_info = await application.bot.get_webhook_info()
+            if webhook_info.url:
+                logger.info(f"Найден активный webhook: {webhook_info.url}")
                 await application.bot.delete_webhook(drop_pending_updates=True)
-                logger.info(f"✅ Webhook успешно очищен (попытка {attempt + 1})")
-                
-                # Пауза перед продолжением
-                await asyncio.sleep(5)
-                break
-                
-            except Conflict as e:
-                logger.warning(f"⚠️ Конфликт при очистке (попытка {attempt + 1}/{max_attempts}): {e}")
-                if attempt < max_attempts - 1:
-                    wait_time = 5 * (attempt + 1)
-                    logger.info(f"⏳ Ожидание {wait_time} секунд...")
-                    await asyncio.sleep(wait_time)
-                else:
-                    logger.error("❌ Не удалось очистить webhook после всех попыток")
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка при очистке (попытка {attempt + 1}/{max_attempts}): {e}")
-                if attempt < max_attempts - 1:
-                    await asyncio.sleep(3)
+                logger.info("✅ Webhook успешно удален")
+            else:
+                logger.info("✅ Webhook не установлен, продолжаем...")
+        except Exception as e:
+            # Игнорируем ошибки - webhook может быть уже удален
+            logger.info(f"ℹ️ Проверка webhook: {e} (это нормально)")
+        
+        # Небольшая пауза для стабильности
+        await asyncio.sleep(2)
         
         # Запускаем остальные сервисы
         await self.start_http_server()
@@ -876,14 +860,6 @@ out center;
             
             # Помечаем, что бот завершает работу
             self.is_shutting_down = True
-            
-            # Пытаемся очистить webhook и выйти
-            try:
-                await asyncio.sleep(5)
-                await self.app.bot.log_out()
-                logger.info("Bot logged out после конфликта")
-            except Exception as e:
-                logger.error(f"Не удалось сделать logout: {e}")
                 
         elif isinstance(context.error, RetryAfter):
             logger.warning(f"⏱ Превышен лимит запросов. Повтор через {context.error.retry_after} секунд")
@@ -926,24 +902,11 @@ out center;
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
         
-        # КРИТИЧЕСКАЯ ОЧИСТКА ПЕРЕД ЗАПУСКОМ
-        logger.info("🧹 Критическая очистка перед запуском...")
+        # Очистка webhook перед запуском
+        logger.info("🧹 Очистка webhook перед запуском...")
         
         try:
-            # Используем requests для надежной очистки
-            logger.info("📤 Отправка logOut запроса...")
-            logout_response = requests.post(
-                f"https://api.telegram.org/bot{self.token}/logOut",
-                timeout=10
-            )
-            if logout_response.status_code == 200:
-                logger.info("✅ LogOut успешен")
-            else:
-                logger.warning(f"⚠️ LogOut вернул код: {logout_response.status_code}")
-            
-            # Дополнительная пауза после logout
-            time.sleep(5)
-            
+            # Только deleteWebhook (без logOut который вызывает проблемы)
             logger.info("📤 Отправка deleteWebhook запроса...")
             webhook_response = requests.post(
                 f"https://api.telegram.org/bot{self.token}/deleteWebhook",
@@ -951,16 +914,20 @@ out center;
                 timeout=10
             )
             if webhook_response.status_code == 200:
-                logger.info("✅ Webhook успешно очищен")
+                result = webhook_response.json()
+                if result.get('ok'):
+                    logger.info("✅ Webhook успешно очищен")
+                else:
+                    logger.info(f"ℹ️ Webhook response: {result.get('description', 'OK')}")
             else:
-                logger.warning(f"⚠️ DeleteWebhook вернул код: {webhook_response.status_code}")
+                logger.info(f"ℹ️ DeleteWebhook вернул код: {webhook_response.status_code} (webhook уже удален)")
                 
         except Exception as e:
-            logger.warning(f"⚠️ Ошибка при предварительной очистке: {e}")
+            logger.info(f"ℹ️ Очистка webhook: {e} (это нормально)")
         
-        # Финальная пауза перед запуском polling
-        logger.info("⏳ Пауза 10 секунд перед запуском polling...")
-        time.sleep(10)
+        # Короткая пауза перед запуском polling
+        logger.info("⏳ Пауза 3 секунды перед запуском polling...")
+        time.sleep(3)
         
         # Запуск с обработкой конфликтов
         max_conflict_retries = 3
@@ -1006,23 +973,18 @@ out center;
                 logger.info(f"⏳ Повторная попытка через {wait_time} секунд...")
                 time.sleep(wait_time)
                 
-                # Повторная агрессивная очистка
+                # Повторная очистка webhook
                 try:
-                    logger.info("🧹 Агрессивная очистка перед повторной попыткой...")
-                    requests.post(
-                        f"https://api.telegram.org/bot{self.token}/logOut",
-                        timeout=10
-                    )
-                    time.sleep(5)
+                    logger.info("🧹 Очистка webhook перед повторной попыткой...")
                     requests.post(
                         f"https://api.telegram.org/bot{self.token}/deleteWebhook",
                         params={"drop_pending_updates": True},
                         timeout=10
                     )
-                    time.sleep(10)
+                    time.sleep(5)
                     logger.info("✅ Очистка завершена")
                 except Exception as e:
-                    logger.warning(f"⚠️ Ошибка при повторной очистке: {e}")
+                    logger.info(f"ℹ️ Очистка webhook: {e}")
             
             except Exception as e:
                 logger.error(f"❌ Неожиданная ошибка при запуске: {e}")
