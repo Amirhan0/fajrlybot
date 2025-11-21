@@ -9,6 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import asyncio
 import os
+import sys
 import time
 from aiohttp import web, ClientSession, ClientTimeout
 from aiohttp.web import Response
@@ -853,6 +854,18 @@ class IslamicBot:
         self.app.add_error_handler(self.error_handler)
         
         logger.info("Бот запущен!")
+        
+        # Для Python 3.14+ нужно явно создать event loop
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        
+        # Создаем новый event loop если его нет (для Python 3.14+)
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
         # Используем run_polling с дополнительными параметрами для надежности
         try:
             self.app.run_polling(
