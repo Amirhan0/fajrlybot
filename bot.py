@@ -826,6 +826,8 @@ class IslamicBot:
                 await asyncio.sleep(5)
                 await self.app.bot.delete_webhook(drop_pending_updates=True)
                 logger.info("Webhook очищен после конфликта")
+                # Дополнительная пауза перед продолжением
+                await asyncio.sleep(10)
             except Exception as e:
                 logger.error(f"Не удалось очистить webhook после конфликта: {e}")
         elif isinstance(context.error, RetryAfter):
@@ -834,7 +836,7 @@ class IslamicBot:
             logger.warning("Ошибка сети. Бот продолжит работу.")
         else:
             logger.error(f"Необработанная ошибка: {context.error}", exc_info=context.error)
-
+    
     def run(self):
         """Запуск бота"""
         self.app = Application.builder().token(self.token).post_init(self.post_init).build()
@@ -866,25 +868,63 @@ class IslamicBot:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
         
-        # Используем run_polling с дополнительными параметрами для надежности
+        # Очищаем webhook перед запуском polling (важно для избежания конфликтов)
+        logger.info("Очистка webhook перед запуском polling...")
         try:
-            self.app.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,
-                close_loop=False,
-                stop_signals=None  # Отключаем обработку сигналов для Render
+            # Простой способ - используем requests для очистки webhook
+            import requests
+            response = requests.post(
+                f"https://api.telegram.org/bot{self.token}/deleteWebhook",
+                params={"drop_pending_updates": True},
+                timeout=10
             )
-        except Conflict as e:
-            logger.error(f"Критический конфликт при запуске polling: {e}")
-            logger.info("Попытка повторного запуска через 10 секунд...")
-            time.sleep(10)
-            # Повторная попытка
-            self.app.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,
-                close_loop=False,
-                stop_signals=None
-            )
+            if response.status_code == 200:
+                logger.info("Webhook успешно очищен перед запуском polling")
+            else:
+                logger.warning(f"Не удалось очистить webhook (код: {response.status_code})")
+        except Exception as e:
+            logger.warning(f"Ошибка при очистке webhook (это нормально, если webhook не установлен): {e}")
+        
+        # Небольшая пауза после очистки webhook
+        time.sleep(2)
+        
+        # Используем run_polling с дополнительными параметрами для надежности
+        max_conflict_retries = 3
+        conflict_count = 0
+        
+        while conflict_count < max_conflict_retries:
+            try:
+                self.app.run_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=True,
+                    close_loop=False,
+                    stop_signals=None  # Отключаем обработку сигналов для Render
+                )
+                break  # Успешный запуск, выходим из цикла
+            except Conflict as e:
+                conflict_count += 1
+                logger.error(f"Критический конфликт при запуске polling (попытка {conflict_count}/{max_conflict_retries}): {e}")
+                
+                if conflict_count >= max_conflict_retries:
+                    logger.error("Достигнуто максимальное количество попыток. Остановка бота.")
+                    logger.error("Пожалуйста, убедитесь, что другой экземпляр бота не запущен.")
+                    raise
+                
+                wait_time = 15 * conflict_count  # Увеличиваем время ожидания с каждой попыткой
+                logger.info(f"Повторная попытка через {wait_time} секунд...")
+                time.sleep(wait_time)
+                
+                # Повторная очистка webhook перед следующей попыткой
+                try:
+                    response = requests.post(
+                        f"https://api.telegram.org/bot{self.token}/deleteWebhook",
+                        params={"drop_pending_updates": True},
+                        timeout=10
+                    )
+                    if response.status_code == 200:
+                        logger.info("Webhook очищен перед повторной попыткой")
+                except Exception as e:
+                    logger.warning(f"Не удалось очистить webhook: {e}")
 
 if __name__ == '__main__':
     BOT_TOKEN = os.getenv('BOT_TOKEN')
