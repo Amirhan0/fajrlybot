@@ -35,7 +35,6 @@ class IslamicBot:
         self.db = Database()
         self.http_server = None
         self.keep_alive_task = None
-        self.is_shutting_down = False
         
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
@@ -129,6 +128,11 @@ class IslamicBot:
             for prayer, time in times.items():
                 message += f"{prayer}: {time}\n"
             
+            # Определяем следующий намаз
+            next_prayer = self.get_next_prayer(times)
+            if next_prayer:
+                message += f"\n⏰ Следующий намаз: {next_prayer}"
+            
             await update.message.reply_text(message)
         else:
             await update.message.reply_text(
@@ -143,6 +147,7 @@ class IslamicBot:
         next_prayer = None
         min_time_diff = None
         
+        # Проверяем каждый намаз и находим ближайший
         for prayer in prayer_names:
             prayer_time_str = times.get(prayer, '')
             if not prayer_time_str:
@@ -152,11 +157,14 @@ class IslamicBot:
                 prayer_hour, prayer_minute = map(int, prayer_time_str.split(':'))
                 prayer_datetime = now.replace(hour=prayer_hour, minute=prayer_minute, second=0, microsecond=0)
                 
+                # Если намаз уже прошел сегодня, проверяем следующий день
                 if prayer_datetime <= now:
                     prayer_datetime += timedelta(days=1)
                 
+                # Вычисляем разницу во времени
                 time_diff = (prayer_datetime - now).total_seconds()
                 
+                # Если это ближайший намаз, сохраняем его
                 if min_time_diff is None or time_diff < min_time_diff:
                     min_time_diff = time_diff
                     next_prayer = (prayer, prayer_time_str, prayer_datetime)
@@ -165,6 +173,7 @@ class IslamicBot:
         
         if next_prayer:
             prayer_name, prayer_time_str, prayer_datetime = next_prayer
+            # Если намаз завтра, добавляем пометку
             if prayer_datetime.date() > now.date():
                 return f"{prayer_name} в {prayer_time_str} (завтра)"
             else:
@@ -176,11 +185,13 @@ class IslamicBot:
         """Установка города пользователя"""
         user_id = update.effective_user.id
         
+        # Если есть аргументы, обрабатываем напрямую
         if context.args:
             city = ' '.join(context.args)
             await self.set_user_city(user_id, city, update)
             return
         
+        # Показываем кнопки с популярными городами
         keyboard = [
             [
                 InlineKeyboardButton("🏙 Алматы", callback_data="set_city_Almaty"),
@@ -210,7 +221,8 @@ class IslamicBot:
         )
     
     async def set_user_city(self, user_id, city, update_or_query):
-        """Установить город пользователя"""
+        """Установить город пользователя (общая функция)"""
+        # Нормализуем название города для API
         city_mapping = {
             'алматы': 'Almaty',
             'алмата': 'Almaty',
@@ -236,6 +248,7 @@ class IslamicBot:
         normalized_city = city_mapping.get(city_lower, city)
         country = "Kazakhstan"
         
+        # Сохраняем в БД
         await self.db.update_user_city(user_id, normalized_city, country)
         
         message = (
@@ -243,12 +256,16 @@ class IslamicBot:
             f"Теперь вы можете узнать время намазов, нажав на кнопку '🕌 Время намаза'"
         )
         
+        # Отправляем ответ в зависимости от типа обновления
         if hasattr(update_or_query, 'edit_message_text'):
+            # Это callback query
             await update_or_query.answer()
             await update_or_query.edit_message_text(message)
         else:
+            # Это обычное сообщение
             await update_or_query.message.reply_text(message)
         
+        # Планируем напоминания
         await self.schedule_prayer_notifications(user_id, normalized_city, country)
 
     async def schedule_prayer_notifications(self, user_id, city, country):
@@ -258,10 +275,12 @@ class IslamicBot:
         if not times:
             return
         
+        # Удаляем старые задачи для этого пользователя
         for job in self.scheduler.get_jobs():
             if str(user_id) in job.id:
                 job.remove()
         
+        # Создаем новые задачи для каждого намаза
         prayers = {
             'Фаджр': times['Фаджр'],
             'Зухр': times['Зухр'],
@@ -335,9 +354,11 @@ class IslamicBot:
             await query.edit_message_text("Дуа в этой категории скоро будут добавлены")
             return
         
+        # Показываем первое дуа
         dua = duas[0]
         message = self.format_dua(dua)
         
+        # Кнопки навигации если дуа больше одного
         keyboard = []
         if len(duas) > 1:
             keyboard.append([
@@ -349,7 +370,7 @@ class IslamicBot:
         await query.edit_message_text(message, reply_markup=reply_markup)
     
     def format_dua(self, dua):
-        """Форматирование дуа"""
+        """Форматирование дуа для отправки"""
         return (
             f"📿 {dua['title']}\n\n"
             f"🕋 {dua['arabic']}\n\n"
@@ -369,11 +390,14 @@ class IslamicBot:
         )
 
     async def show_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать статистику намазов"""
+        """Показать расширенную статистику намазов"""
         user_id = update.effective_user.id
+        
+        # Статистика за последние 30 дней
         stats = await self.db.get_prayer_stats(user_id, days=30)
         
         if not stats:
+            # Показываем кнопки для отметки намаза
             keyboard = [
                 [
                     InlineKeyboardButton("🌅 Фаджр", callback_data="mark_prayer_Фаджр"),
@@ -396,18 +420,22 @@ class IslamicBot:
             )
             return
         
+        # Подсчёт выполненных намазов
         completed = [s for s in stats if s['completed']]
         completed_count = len(completed)
         total_count = len(stats)
         percentage = (completed_count/total_count*100) if total_count > 0 else 0
         
+        # Подсчёт streak (дней подряд)
         streak = await self.calculate_streak(user_id)
         
+        # Статистика по намазам
         prayer_counts = {}
         for stat in completed:
             prayer_name = stat['prayer_name']
             prayer_counts[prayer_name] = prayer_counts.get(prayer_name, 0) + 1
         
+        # Формируем сообщение
         message = f"📊 СТАТИСТИКА НАМАЗОВ\n\n"
         message += f"📅 Период: последние 30 дней\n\n"
         message += f"✅ Выполнено: {completed_count} из {total_count}\n"
@@ -418,10 +446,12 @@ class IslamicBot:
         for prayer, count in sorted(prayer_counts.items()):
             message += f"  {prayer}: {count}\n"
         
+        # График последних 7 дней
         message += "\n📈 Последние 7 дней:\n"
         last_7_days = await self.get_last_7_days_chart(user_id)
         message += last_7_days
         
+        # Кнопки
         keyboard = [
             [
                 InlineKeyboardButton("🌅 Фаджр", callback_data="mark_prayer_Фаджр"),
@@ -440,11 +470,12 @@ class IslamicBot:
         await update.message.reply_text(message, reply_markup=reply_markup)
     
     async def calculate_streak(self, user_id):
-        """Подсчёт streak"""
+        """Подсчёт дней подряд с выполненными намазами"""
         streak = 0
         current_date = datetime.now().date()
         
         while True:
+            # Проверяем, был ли хотя бы один намаз в этот день
             stats = await self.db.get_prayer_stats(user_id, days=1)
             day_stats = [s for s in stats if str(s['prayer_date']) == str(current_date) and s['completed']]
             
@@ -454,32 +485,36 @@ class IslamicBot:
             else:
                 break
             
-            if streak > 100:
+            if streak > 100:  # Ограничение для производительности
                 break
         
         return streak
     
     async def get_last_7_days_chart(self, user_id):
-        """График последних 7 дней"""
+        """Текстовый график последних 7 дней"""
         chart = ""
         
         for i in range(6, -1, -1):
             date = datetime.now().date() - timedelta(days=i)
             date_str = date.strftime("%d.%m")
             
+            # Получаем намазы за этот день
             stats = await self.db.get_prayer_stats(user_id, days=7)
             day_stats = [s for s in stats if str(s['prayer_date']) == str(date) and s['completed']]
             
             completed_count = len(day_stats)
+            
+            # Рисуем график
             bars = "█" * completed_count + "░" * (5 - completed_count)
             chart += f"{date_str} {bars} {completed_count}/5\n"
         
         return chart
     
     async def mark_prayer_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Отметить намаз"""
+        """Отметить намаз как выполненный"""
         user_id = update.effective_user.id
         
+        # Если есть аргументы, обрабатываем напрямую
         if context.args:
             prayer_name = ' '.join(context.args)
             valid_prayers = ['Фаджр', 'Зухр', 'Аср', 'Магриб', 'Иша']
@@ -487,6 +522,7 @@ class IslamicBot:
                 await self.mark_prayer_completed(user_id, prayer_name, update)
                 return
         
+        # Показываем кнопки для выбора намаза
         keyboard = [
             [
                 InlineKeyboardButton("🌅 Фаджр", callback_data="mark_prayer_Фаджр"),
@@ -508,9 +544,11 @@ class IslamicBot:
         )
     
     async def mark_prayer_completed(self, user_id, prayer_name, update_or_query):
-        """Отметить намаз как выполненный"""
+        """Отметить намаз как выполненный (общая функция)"""
+        # Отмечаем в БД
         await self.db.mark_prayer_completed(user_id, prayer_name)
         
+        # Обновляем streak
         streak = await self.calculate_streak(user_id)
         
         message = f"✅ {prayer_name} отмечен как выполненный!\n\n"
@@ -525,14 +563,17 @@ class IslamicBot:
             elif streak == 100:
                 message += "\n👑 Невероятно! 100 дней подряд!"
         
+        # Отправляем ответ в зависимости от типа обновления
         if hasattr(update_or_query, 'edit_message_text'):
+            # Это callback query
             await update_or_query.answer()
             await update_or_query.edit_message_text(message)
         else:
+            # Это обычное сообщение
             await update_or_query.message.reply_text(message)
 
     async def find_mosques(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Найти мечети"""
+        """Найти ближайшие мечети"""
         user_id = update.effective_user.id
         user = await self.db.get_user(user_id)
         
@@ -551,7 +592,7 @@ class IslamicBot:
         if not mosques:
             await update.message.reply_text(
                 f"❌ Не удалось найти мечети в городе {city}.\n\n"
-                f"Попробуйте указать более крупный город."
+                f"Попробуйте указать более крупный город или воспользуйтесь картами."
             )
             return
         
@@ -577,128 +618,48 @@ class IslamicBot:
         await update.message.reply_text(message, parse_mode='Markdown', disable_web_page_preview=True)
     
     async def search_mosques_nominatim(self, city, country):
-        """Поиск мечетей через OpenStreetMap"""
+        """Поиск мечетей через OpenStreetMap Nominatim"""
         try:
-            # Сначала получаем координаты города через Nominatim
-            nominatim_url = "https://nominatim.openstreetmap.org/search"
-            nominatim_params = {
-                'q': f"{city}, {country}",
-                'format': 'json',
-                'limit': 1
-            }
+            query = f"""
+            [out:json];
+            area["name"="{city}"]->.city;
+            (
+              node["amenity"="place_of_worship"]["religion"="muslim"](area.city);
+              way["amenity"="place_of_worship"]["religion"="muslim"](area.city);
+            );
+            out center;
+            """
+            
+            url = "https://overpass-api.de/api/interpreter"
             
             loop = asyncio.get_event_loop()
-            nominatim_response = await loop.run_in_executor(
-                None,
-                lambda: requests.get(nominatim_url, params=nominatim_params, timeout=10, 
-                                    headers={'User-Agent': 'IslamicBot/1.0'})
+            response = await loop.run_in_executor(
+                None, 
+                lambda: requests.post(url, data={'data': query}, timeout=10)
             )
             
-            if nominatim_response.status_code != 200:
-                logger.error(f"Ошибка Nominatim: статус {nominatim_response.status_code}")
-                return []
-            
-            nominatim_data = nominatim_response.json()
-            if not nominatim_data:
-                logger.warning(f"Город {city} не найден в Nominatim")
-                return []
-            
-            # Получаем bounding box города
-            bbox = nominatim_data[0].get('boundingbox', [])
-            if not bbox or len(bbox) != 4:
-                # Если нет bounding box, используем координаты с радиусом
-                lat = float(nominatim_data[0]['lat'])
-                lon = float(nominatim_data[0]['lon'])
-                # Используем приблизительный радиус ~10 км
-                bbox = [str(lat - 0.1), str(lat + 0.1), str(lon - 0.1), str(lon + 0.1)]
-            
-            # Формируем Overpass запрос с bounding box
-            south, north, west, east = bbox
-            overpass_query = f"""
-[out:json][timeout:25];
-(
-  node["amenity"="place_of_worship"]["religion"="muslim"]({south},{west},{north},{east});
-  way["amenity"="place_of_worship"]["religion"="muslim"]({south},{west},{north},{east});
-  relation["amenity"="place_of_worship"]["religion"="muslim"]({south},{west},{north},{east});
-);
-out center;
-"""
-            
-            overpass_url = "https://overpass-api.de/api/interpreter"
-            
-            overpass_response = await loop.run_in_executor(
-                None,
-                lambda: requests.post(overpass_url, data=overpass_query, timeout=30,
-                                    headers={'Content-Type': 'text/plain'})
-            )
-            
-            if overpass_response.status_code != 200:
-                logger.error(f"Ошибка Overpass API: статус {overpass_response.status_code}")
-                logger.error(f"Ответ: {overpass_response.text[:500]}")
-                return []
-            
-            data = overpass_response.json()
-            
-            # Проверяем на ошибки в ответе
-            if 'remark' in data and 'error' in data.get('remark', '').lower():
-                logger.error(f"Ошибка Overpass: {data.get('remark')}")
-                return []
-            
-            mosques = []
-            seen_names = set()  # Для избежания дубликатов
-            
-            for element in data.get('elements', []):
-                tags = element.get('tags', {})
-                name = tags.get('name', 'Мечеть')
+            if response.status_code == 200:
+                data = response.json()
+                mosques = []
                 
-                # Пропускаем дубликаты
-                if name in seen_names:
-                    continue
-                seen_names.add(name)
+                for element in data.get('elements', []):
+                    mosque = {
+                        'name': element.get('tags', {}).get('name', 'Мечеть'),
+                        'lat': element.get('lat') or element.get('center', {}).get('lat'),
+                        'lon': element.get('lon') or element.get('center', {}).get('lon'),
+                        'address': element.get('tags', {}).get('addr:street', '')
+                    }
+                    mosques.append(mosque)
                 
-                # Получаем координаты
-                lat = element.get('lat')
-                lon = element.get('lon')
-                
-                if not lat or not lon:
-                    center = element.get('center', {})
-                    lat = center.get('lat')
-                    lon = center.get('lon')
-                
-                if not lat or not lon:
-                    continue
-                
-                # Формируем адрес
-                address_parts = []
-                if tags.get('addr:street'):
-                    address_parts.append(tags.get('addr:street'))
-                if tags.get('addr:housenumber'):
-                    address_parts.append(tags.get('addr:housenumber'))
-                address = ', '.join(address_parts) if address_parts else 'Адрес не указан'
-                
-                mosque = {
-                    'name': name,
-                    'lat': lat,
-                    'lon': lon,
-                    'address': address
-                }
-                mosques.append(mosque)
+                return mosques
             
-            logger.info(f"Найдено {len(mosques)} мечетей в городе {city}")
-            return mosques
-            
-        except requests.exceptions.Timeout:
-            logger.error("Таймаут при поиске мечетей")
-            return []
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Ошибка сети при поиске мечетей: {e}")
             return []
         except Exception as e:
-            logger.error(f"Ошибка поиска мечетей: {e}", exc_info=True)
+            logger.error(f"Ошибка поиска мечетей: {e}")
             return []
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка сообщений"""
+        """Обработка сообщений с кнопок"""
         text = update.message.text
         
         if text == "🕌 Время намаза":
@@ -723,7 +684,7 @@ out center;
             )
     
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка callback"""
+        """Обработка нажатий на inline кнопки"""
         query = update.callback_query
         
         if query.data.startswith("dua_cat_"):
@@ -747,14 +708,17 @@ out center;
                 reply_markup=reply_markup
             )
         elif query.data.startswith("mark_prayer_"):
+            # Обработка отметки намаза
             prayer_name = query.data.replace("mark_prayer_", "")
             user_id = update.effective_user.id
             await self.mark_prayer_completed(user_id, prayer_name, query)
         elif query.data.startswith("set_city_"):
+            # Обработка выбора города
             city_data = query.data.replace("set_city_", "")
             user_id = update.effective_user.id
             
             if city_data == "input":
+                # Пользователь хочет ввести город вручную
                 await query.answer()
                 await query.edit_message_text(
                     "✏️ Введите название города:\n\n"
@@ -762,6 +726,7 @@ out center;
                     "Или используйте команду: /setcity [название города]"
                 )
             else:
+                # Город выбран из списка
                 await self.set_user_city(user_id, city_data, query)
 
     async def toggle_notifications(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -780,16 +745,17 @@ out center;
             await update.message.reply_text(f"✅ Уведомления {status}")
 
     async def health_check_handler(self, request):
-        """Health check"""
+        """Обработчик health check запросов"""
         return Response(text="OK", status=200)
     
     async def start_http_server(self):
-        """Запуск HTTP сервера"""
+        """Запуск HTTP сервера для health check"""
         try:
             port = int(os.getenv('PORT', 8080))
             app = web.Application()
             app.router.add_get('/', self.health_check_handler)
             app.router.add_get('/health', self.health_check_handler)
+            app.router.add_get('/healtz', self.health_check_handler)  # Для Render
             
             runner = web.AppRunner(app)
             await runner.setup()
@@ -797,17 +763,18 @@ out center;
             await site.start()
             
             self.http_server = runner
-            logger.info(f"HTTP сервер запущен на порту {port}")
+            logger.info(f"✅ HTTP сервер запущен на 0.0.0.0:{port}")
+            logger.info(f"📍 Health check endpoints: /, /health, /healtz")
         except Exception as e:
-            logger.error(f"Ошибка при запуске HTTP сервера: {e}")
+            logger.error(f"❌ Ошибка при запуске HTTP сервера: {e}")
     
     async def keep_alive_ping(self):
-        """Keep-alive механизм"""
+        """Keep-alive механизм - пинг самого себя каждые 10 минут"""
         try:
             port = int(os.getenv('PORT', 8080))
             url = f"http://localhost:{port}/health"
             
-            while not self.is_shutting_down:
+            while True:
                 await asyncio.sleep(600)  # 10 минут
                 try:
                     async with ClientSession() as session:
@@ -821,60 +788,57 @@ out center;
     
     async def post_init(self, application: Application) -> None:
         """Инициализация после запуска"""
-        logger.info("🚀 Начинаем инициализацию бота...")
-        
-        # Простая очистка webhook (без логаута, так как это вызывает проблемы)
-        try:
-            # Проверяем текущий webhook
-            webhook_info = await application.bot.get_webhook_info()
-            if webhook_info.url:
-                logger.info(f"Найден активный webhook: {webhook_info.url}")
+        # Очистка webhook перед запуском polling с несколькими попытками
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
                 await application.bot.delete_webhook(drop_pending_updates=True)
-                logger.info("✅ Webhook успешно удален")
-            else:
-                logger.info("✅ Webhook не установлен, продолжаем...")
-        except Exception as e:
-            # Игнорируем ошибки - webhook может быть уже удален
-            logger.info(f"ℹ️ Проверка webhook: {e} (это нормально)")
+                logger.info("Webhook успешно очищен перед запуском polling")
+                break
+            except Conflict as e:
+                logger.warning(f"Конфликт при очистке webhook (попытка {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)  # Экспоненциальная задержка
+                else:
+                    logger.error("Не удалось очистить webhook после всех попыток")
+            except Exception as e:
+                logger.warning(f"Ошибка при очистке webhook (попытка {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1)
         
-        # Небольшая пауза для стабильности
-        await asyncio.sleep(2)
-        
-        # Запускаем остальные сервисы
+        # Запускаем HTTP сервер для health check
         await self.start_http_server()
+        
+        # Запускаем keep-alive механизм
         self.keep_alive_task = asyncio.create_task(self.keep_alive_ping())
+        
         await self.db.init_db()
         self.scheduler.start()
-        logger.info("✅ База данных и планировщик запущены!")
+        logger.info("База данных и планировщик запущены!")
     
     async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Обработчик ошибок"""
-        logger.error(f"❌ Ошибка при обработке обновления: {context.error}")
+        logger.error(f"Ошибка при обработке обновления: {context.error}")
         
         if isinstance(context.error, Conflict):
-            logger.error("🚫 КРИТИЧЕСКИЙ КОНФЛИКТ: Другой экземпляр бота использует getUpdates!")
-            logger.error("📋 Действия для решения:")
-            logger.error("   1. Остановите ВСЕ экземпляры бота на Render")
-            logger.error("   2. Подождите 30 секунд")
-            logger.error("   3. Запустите ОДИН экземпляр")
-            
-            # Помечаем, что бот завершает работу
-            self.is_shutting_down = True
-                
+            logger.warning("Обнаружен конфликт: другой экземпляр бота уже запущен. "
+                          "Убедитесь, что запущен только один экземпляр.")
+            # Пытаемся очистить webhook и подождать перед повторной попыткой
+            try:
+                await asyncio.sleep(5)
+                await self.app.bot.delete_webhook(drop_pending_updates=True)
+                logger.info("Webhook очищен после конфликта")
+            except Exception as e:
+                logger.error(f"Не удалось очистить webhook после конфликта: {e}")
         elif isinstance(context.error, RetryAfter):
-            logger.warning(f"⏱ Превышен лимит запросов. Повтор через {context.error.retry_after} секунд")
+            logger.warning(f"Превышен лимит запросов. Повтор через {context.error.retry_after} секунд")
         elif isinstance(context.error, (TimedOut, NetworkError)):
-            logger.warning("🌐 Ошибка сети. Бот продолжит работу.")
+            logger.warning("Ошибка сети. Бот продолжит работу.")
         else:
-            logger.error(f"⚠️ Необработанная ошибка: {context.error}", exc_info=context.error)
-    
+            logger.error(f"Необработанная ошибка: {context.error}", exc_info=context.error)
+
     def run(self):
         """Запуск бота"""
-        logger.info("=" * 60)
-        logger.info("🤖 ЗАПУСК ИСЛАМСКОГО БОТА")
-        logger.info("=" * 60)
-        
-        # Создаем application
         self.app = Application.builder().token(self.token).post_init(self.post_init).build()
         
         # Регистрация обработчиков
@@ -891,112 +855,44 @@ out center;
         # Регистрация обработчика ошибок
         self.app.add_error_handler(self.error_handler)
         
-        # Для Windows
+        logger.info("Бот запущен!")
+        
+        # Для Python 3.14+ нужно явно создать event loop
         if sys.platform == 'win32':
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         
-        # Создаем event loop для Python 3.14+
+        # Создаем новый event loop если его нет (для Python 3.14+)
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
         
-        # Очистка webhook перед запуском
-        logger.info("🧹 Очистка webhook перед запуском...")
-        
+        # Используем run_polling с дополнительными параметрами для надежности
         try:
-            # Только deleteWebhook (без logOut который вызывает проблемы)
-            logger.info("📤 Отправка deleteWebhook запроса...")
-            webhook_response = requests.post(
-                f"https://api.telegram.org/bot{self.token}/deleteWebhook",
-                params={"drop_pending_updates": True},
-                timeout=10
+            self.app.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+                close_loop=False,
+                stop_signals=None  # Отключаем обработку сигналов для Render
             )
-            if webhook_response.status_code == 200:
-                result = webhook_response.json()
-                if result.get('ok'):
-                    logger.info("✅ Webhook успешно очищен")
-                else:
-                    logger.info(f"ℹ️ Webhook response: {result.get('description', 'OK')}")
-            else:
-                logger.info(f"ℹ️ DeleteWebhook вернул код: {webhook_response.status_code} (webhook уже удален)")
-                
-        except Exception as e:
-            logger.info(f"ℹ️ Очистка webhook: {e} (это нормально)")
-        
-        # Короткая пауза перед запуском polling
-        logger.info("⏳ Пауза 3 секунды перед запуском polling...")
-        time.sleep(3)
-        
-        # Запуск с обработкой конфликтов
-        max_conflict_retries = 3
-        conflict_count = 0
-        
-        logger.info("🚀 Запуск polling...")
-        
-        while conflict_count < max_conflict_retries:
-            try:
-                self.app.run_polling(
-                    allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
-                    close_loop=False,
-                    stop_signals=None  # Для Render
-                )
-                break  # Успешный запуск
-                
-            except Conflict as e:
-                conflict_count += 1
-                logger.error("=" * 60)
-                logger.error(f"🚫 КОНФЛИКТ ПРИ ЗАПУСКЕ (попытка {conflict_count}/{max_conflict_retries})")
-                logger.error("=" * 60)
-                logger.error(f"Ошибка: {e}")
-                
-                if conflict_count >= max_conflict_retries:
-                    logger.error("=" * 60)
-                    logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Не удалось запустить бота")
-                    logger.error("=" * 60)
-                    logger.error("📋 ВОЗМОЖНЫЕ ПРИЧИНЫ:")
-                    logger.error("   1. Другой экземпляр бота уже запущен на Render")
-                    logger.error("   2. Webhook все еще активен")
-                    logger.error("   3. Другое приложение использует этого бота")
-                    logger.error("")
-                    logger.error("🔧 РЕШЕНИЕ:")
-                    logger.error("   1. Зайдите в Render Dashboard")
-                    logger.error("   2. Остановите ВСЕ запущенные инстансы")
-                    logger.error("   3. Подождите 1 минуту")
-                    logger.error("   4. Запустите заново ОДИН инстанс")
-                    logger.error("=" * 60)
-                    raise
-                
-                wait_time = 20 * conflict_count
-                logger.info(f"⏳ Повторная попытка через {wait_time} секунд...")
-                time.sleep(wait_time)
-                
-                # Повторная очистка webhook
-                try:
-                    logger.info("🧹 Очистка webhook перед повторной попыткой...")
-                    requests.post(
-                        f"https://api.telegram.org/bot{self.token}/deleteWebhook",
-                        params={"drop_pending_updates": True},
-                        timeout=10
-                    )
-                    time.sleep(5)
-                    logger.info("✅ Очистка завершена")
-                except Exception as e:
-                    logger.info(f"ℹ️ Очистка webhook: {e}")
-            
-            except Exception as e:
-                logger.error(f"❌ Неожиданная ошибка при запуске: {e}")
-                raise
+        except Conflict as e:
+            logger.error(f"Критический конфликт при запуске polling: {e}")
+            logger.info("Попытка повторного запуска через 10 секунд...")
+            time.sleep(10)
+            # Повторная попытка
+            self.app.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+                close_loop=False,
+                stop_signals=None
+            )
 
 if __name__ == '__main__':
     BOT_TOKEN = os.getenv('BOT_TOKEN')
     
     if not BOT_TOKEN:
-        raise ValueError("❌ BOT_TOKEN не найден в .env файле!")
-    
-    logger.info(f"🔑 Токен бота загружен (длина: {len(BOT_TOKEN)} символов)")
+        raise ValueError("BOT_TOKEN не найден в .env файле!")
     
     bot = IslamicBot(BOT_TOKEN)
     bot.run()
