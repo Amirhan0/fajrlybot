@@ -579,42 +579,122 @@ class IslamicBot:
     async def search_mosques_nominatim(self, city, country):
         """Поиск мечетей через OpenStreetMap"""
         try:
-            query = f"""
-            [out:json];
-            area["name"="{city}"]->.city;
-            (
-              node["amenity"="place_of_worship"]["religion"="muslim"](area.city);
-              way["amenity"="place_of_worship"]["religion"="muslim"](area.city);
-            );
-            out center;
-            """
-            
-            url = "https://overpass-api.de/api/interpreter"
+            # Сначала получаем координаты города через Nominatim
+            nominatim_url = "https://nominatim.openstreetmap.org/search"
+            nominatim_params = {
+                'q': f"{city}, {country}",
+                'format': 'json',
+                'limit': 1
+            }
             
             loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None, 
-                lambda: requests.post(url, data={'data': query}, timeout=10)
+            nominatim_response = await loop.run_in_executor(
+                None,
+                lambda: requests.get(nominatim_url, params=nominatim_params, timeout=10, 
+                                    headers={'User-Agent': 'IslamicBot/1.0'})
             )
             
-            if response.status_code == 200:
-                data = response.json()
-                mosques = []
-                
-                for element in data.get('elements', []):
-                    mosque = {
-                        'name': element.get('tags', {}).get('name', 'Мечеть'),
-                        'lat': element.get('lat') or element.get('center', {}).get('lat'),
-                        'lon': element.get('lon') or element.get('center', {}).get('lon'),
-                        'address': element.get('tags', {}).get('addr:street', '')
-                    }
-                    mosques.append(mosque)
-                
-                return mosques
+            if nominatim_response.status_code != 200:
+                logger.error(f"Ошибка Nominatim: статус {nominatim_response.status_code}")
+                return []
             
+            nominatim_data = nominatim_response.json()
+            if not nominatim_data:
+                logger.warning(f"Город {city} не найден в Nominatim")
+                return []
+            
+            # Получаем bounding box города
+            bbox = nominatim_data[0].get('boundingbox', [])
+            if not bbox or len(bbox) != 4:
+                # Если нет bounding box, используем координаты с радиусом
+                lat = float(nominatim_data[0]['lat'])
+                lon = float(nominatim_data[0]['lon'])
+                # Используем приблизительный радиус ~10 км
+                bbox = [str(lat - 0.1), str(lat + 0.1), str(lon - 0.1), str(lon + 0.1)]
+            
+            # Формируем Overpass запрос с bounding box
+            south, north, west, east = bbox
+            overpass_query = f"""
+[out:json][timeout:25];
+(
+  node["amenity"="place_of_worship"]["religion"="muslim"]({south},{west},{north},{east});
+  way["amenity"="place_of_worship"]["religion"="muslim"]({south},{west},{north},{east});
+  relation["amenity"="place_of_worship"]["religion"="muslim"]({south},{west},{north},{east});
+);
+out center;
+"""
+            
+            overpass_url = "https://overpass-api.de/api/interpreter"
+            
+            overpass_response = await loop.run_in_executor(
+                None,
+                lambda: requests.post(overpass_url, data=overpass_query, timeout=30,
+                                    headers={'Content-Type': 'text/plain'})
+            )
+            
+            if overpass_response.status_code != 200:
+                logger.error(f"Ошибка Overpass API: статус {overpass_response.status_code}")
+                logger.error(f"Ответ: {overpass_response.text[:500]}")
+                return []
+            
+            data = overpass_response.json()
+            
+            # Проверяем на ошибки в ответе
+            if 'remark' in data and 'error' in data.get('remark', '').lower():
+                logger.error(f"Ошибка Overpass: {data.get('remark')}")
+                return []
+            
+            mosques = []
+            seen_names = set()  # Для избежания дубликатов
+            
+            for element in data.get('elements', []):
+                tags = element.get('tags', {})
+                name = tags.get('name', 'Мечеть')
+                
+                # Пропускаем дубликаты
+                if name in seen_names:
+                    continue
+                seen_names.add(name)
+                
+                # Получаем координаты
+                lat = element.get('lat')
+                lon = element.get('lon')
+                
+                if not lat or not lon:
+                    center = element.get('center', {})
+                    lat = center.get('lat')
+                    lon = center.get('lon')
+                
+                if not lat or not lon:
+                    continue
+                
+                # Формируем адрес
+                address_parts = []
+                if tags.get('addr:street'):
+                    address_parts.append(tags.get('addr:street'))
+                if tags.get('addr:housenumber'):
+                    address_parts.append(tags.get('addr:housenumber'))
+                address = ', '.join(address_parts) if address_parts else 'Адрес не указан'
+                
+                mosque = {
+                    'name': name,
+                    'lat': lat,
+                    'lon': lon,
+                    'address': address
+                }
+                mosques.append(mosque)
+            
+            logger.info(f"Найдено {len(mosques)} мечетей в городе {city}")
+            return mosques
+            
+        except requests.exceptions.Timeout:
+            logger.error("Таймаут при поиске мечетей")
+            return []
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Ошибка сети при поиске мечетей: {e}")
             return []
         except Exception as e:
-            logger.error(f"Ошибка поиска мечетей: {e}")
+            logger.error(f"Ошибка поиска мечетей: {e}", exc_info=True)
             return []
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
