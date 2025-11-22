@@ -27,6 +27,92 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+class ImprovedKeepAlive:
+    """Улучшенный keep-alive механизм для Render"""
+    
+    def __init__(self, app_url=None):
+        self.app_url = app_url or os.getenv('RENDER_EXTERNAL_URL', '')
+        self.interval = 5 * 60  # 5 минут
+        self.is_running = False
+        self.task = None
+        
+    async def ping_self(self):
+        """Пингует внешний URL приложения"""
+        if not self.app_url:
+            return False
+            
+        health_url = f"{self.app_url.rstrip('/')}/health"
+        
+        try:
+            timeout = ClientTimeout(total=10)
+            async with ClientSession(timeout=timeout) as session:
+                async with session.get(health_url) as response:
+                    if response.status == 200:
+                        logger.info(f"✅ Keep-alive ping успешен [{datetime.now().strftime('%H:%M:%S')}]")
+                        return True
+                    else:
+                        logger.warning(f"⚠️ Keep-alive ping вернул {response.status}")
+                        return False
+        except asyncio.TimeoutError:
+            logger.warning("⏱️ Keep-alive ping timeout")
+            return False
+        except Exception as e:
+            logger.debug(f"Keep-alive ping ошибка: {e}")
+            return False
+    
+    async def keep_alive_loop(self):
+        """Основной цикл keep-alive"""
+        if not self.app_url:
+            logger.warning("⚠️ RENDER_EXTERNAL_URL не установлен - keep-alive отключен")
+            return
+            
+        logger.info(f"🔄 Keep-alive запущен (интервал: {self.interval // 60} мин)")
+        logger.info(f"📍 Target URL: {self.app_url}/health")
+        
+        await asyncio.sleep(30)
+        
+        self.is_running = True
+        consecutive_failures = 0
+        
+        while self.is_running:
+            try:
+                success = await self.ping_self()
+                
+                if success:
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+                    if consecutive_failures >= 3:
+                        logger.error(f"🚨 {consecutive_failures} неудачных пингов подряд!")
+                
+                await asyncio.sleep(self.interval)
+                
+            except asyncio.CancelledError:
+                logger.info("🛑 Keep-alive остановлен")
+                break
+            except Exception as e:
+                logger.error(f"❌ Ошибка в keep-alive loop: {e}")
+                await asyncio.sleep(60)
+    
+    def start(self):
+        """Запустить keep-alive"""
+        if self.task is None or self.task.done():
+            self.task = asyncio.create_task(self.keep_alive_loop())
+            return self.task
+        return self.task
+    
+    async def stop(self):
+        """Остановить keep-alive"""
+        self.is_running = False
+        if self.task:
+            self.task.cancel()
+            try:
+                await self.task
+            except asyncio.CancelledError:
+                pass
+
+
 class IslamicBot:
     def __init__(self, token):
         self.token = token
@@ -34,7 +120,7 @@ class IslamicBot:
         self.app = None
         self.db = Database()
         self.http_server = None
-        self.keep_alive_task = None
+        self.keep_alive = ImprovedKeepAlive()
         
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
@@ -42,7 +128,6 @@ class IslamicBot:
         username = update.effective_user.username
         first_name = update.effective_user.first_name
         
-        # Добавляем пользователя в БД
         await self.db.add_user(user_id, username, first_name)
         
         keyboard = [
@@ -74,7 +159,7 @@ class IslamicBot:
             params = {
                 'city': city,
                 'country': country,
-                'method': 2  # ISNA метод расчета
+                'method': 2
             }
             
             response = requests.get(url, params=params, timeout=10)
@@ -104,8 +189,6 @@ class IslamicBot:
     async def prayer_times_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда для показа времени намазов"""
         user_id = update.effective_user.id
-        
-        # Получаем пользователя из БД
         user = await self.db.get_user(user_id)
         
         if not user or not user.get('city'):
@@ -118,7 +201,6 @@ class IslamicBot:
         country = user['country']
         
         await self.db.update_last_active(user_id)
-        
         await update.message.reply_text("⏳ Получаю время намазов...")
         
         times = await self.get_prayer_times(city, country)
@@ -128,7 +210,6 @@ class IslamicBot:
             for prayer, time in times.items():
                 message += f"{prayer}: {time}\n"
             
-            # Определяем следующий намаз
             next_prayer = self.get_next_prayer(times)
             if next_prayer:
                 message += f"\n⏰ Следующий намаз: {next_prayer}"
@@ -147,7 +228,6 @@ class IslamicBot:
         next_prayer = None
         min_time_diff = None
         
-        # Проверяем каждый намаз и находим ближайший
         for prayer in prayer_names:
             prayer_time_str = times.get(prayer, '')
             if not prayer_time_str:
@@ -157,14 +237,11 @@ class IslamicBot:
                 prayer_hour, prayer_minute = map(int, prayer_time_str.split(':'))
                 prayer_datetime = now.replace(hour=prayer_hour, minute=prayer_minute, second=0, microsecond=0)
                 
-                # Если намаз уже прошел сегодня, проверяем следующий день
                 if prayer_datetime <= now:
                     prayer_datetime += timedelta(days=1)
                 
-                # Вычисляем разницу во времени
                 time_diff = (prayer_datetime - now).total_seconds()
                 
-                # Если это ближайший намаз, сохраняем его
                 if min_time_diff is None or time_diff < min_time_diff:
                     min_time_diff = time_diff
                     next_prayer = (prayer, prayer_time_str, prayer_datetime)
@@ -173,7 +250,6 @@ class IslamicBot:
         
         if next_prayer:
             prayer_name, prayer_time_str, prayer_datetime = next_prayer
-            # Если намаз завтра, добавляем пометку
             if prayer_datetime.date() > now.date():
                 return f"{prayer_name} в {prayer_time_str} (завтра)"
             else:
@@ -185,13 +261,11 @@ class IslamicBot:
         """Установка города пользователя"""
         user_id = update.effective_user.id
         
-        # Если есть аргументы, обрабатываем напрямую
         if context.args:
             city = ' '.join(context.args)
             await self.set_user_city(user_id, city, update)
             return
         
-        # Показываем кнопки с популярными городами
         keyboard = [
             [
                 InlineKeyboardButton("🏙 Алматы", callback_data="set_city_Almaty"),
@@ -221,34 +295,23 @@ class IslamicBot:
         )
     
     async def set_user_city(self, user_id, city, update_or_query):
-        """Установить город пользователя (общая функция)"""
-        # Нормализуем название города для API
+        """Установить город пользователя"""
         city_mapping = {
-            'алматы': 'Almaty',
-            'алмата': 'Almaty',
-            'астана': 'Astana',
-            'нур-султан': 'Astana',
-            'шымкент': 'Shymkent',
-            'караганда': 'Karaganda',
-            'актобе': 'Aktobe',
-            'тараз': 'Taraz',
-            'павлодар': 'Pavlodar',
-            'усть-каменогорск': 'Oskemen',
-            'oskemen': 'Oskemen',
-            'almaty': 'Almaty',
-            'astana': 'Astana',
-            'shymkent': 'Shymkent',
-            'karaganda': 'Karaganda',
-            'aktobe': 'Aktobe',
-            'taraz': 'Taraz',
-            'pavlodar': 'Pavlodar'
+            'алматы': 'Almaty', 'алмата': 'Almaty',
+            'астана': 'Astana', 'нур-султан': 'Astana',
+            'шымкент': 'Shymkent', 'караганда': 'Karaganda',
+            'актобе': 'Aktobe', 'тараз': 'Taraz',
+            'павлодар': 'Pavlodar', 'усть-каменогорск': 'Oskemen',
+            'oskemen': 'Oskemen', 'almaty': 'Almaty',
+            'astana': 'Astana', 'shymkent': 'Shymkent',
+            'karaganda': 'Karaganda', 'aktobe': 'Aktobe',
+            'taraz': 'Taraz', 'pavlodar': 'Pavlodar'
         }
         
         city_lower = city.lower().strip()
         normalized_city = city_mapping.get(city_lower, city)
         country = "Kazakhstan"
         
-        # Сохраняем в БД
         await self.db.update_user_city(user_id, normalized_city, country)
         
         message = (
@@ -256,16 +319,12 @@ class IslamicBot:
             f"Теперь вы можете узнать время намазов, нажав на кнопку '🕌 Время намаза'"
         )
         
-        # Отправляем ответ в зависимости от типа обновления
         if hasattr(update_or_query, 'edit_message_text'):
-            # Это callback query
             await update_or_query.answer()
             await update_or_query.edit_message_text(message)
         else:
-            # Это обычное сообщение
             await update_or_query.message.reply_text(message)
         
-        # Планируем напоминания
         await self.schedule_prayer_notifications(user_id, normalized_city, country)
 
     async def schedule_prayer_notifications(self, user_id, city, country):
@@ -275,12 +334,10 @@ class IslamicBot:
         if not times:
             return
         
-        # Удаляем старые задачи для этого пользователя
         for job in self.scheduler.get_jobs():
             if str(user_id) in job.id:
                 job.remove()
         
-        # Создаем новые задачи для каждого намаза
         prayers = {
             'Фаджр': times['Фаджр'],
             'Зухр': times['Зухр'],
@@ -354,11 +411,9 @@ class IslamicBot:
             await query.edit_message_text("Дуа в этой категории скоро будут добавлены")
             return
         
-        # Показываем первое дуа
         dua = duas[0]
         message = self.format_dua(dua)
         
-        # Кнопки навигации если дуа больше одного
         keyboard = []
         if len(duas) > 1:
             keyboard.append([
@@ -390,14 +445,11 @@ class IslamicBot:
         )
 
     async def show_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать расширенную статистику намазов"""
+        """Показать статистику намазов"""
         user_id = update.effective_user.id
-        
-        # Статистика за последние 30 дней
         stats = await self.db.get_prayer_stats(user_id, days=30)
         
         if not stats:
-            # Показываем кнопки для отметки намаза
             keyboard = [
                 [
                     InlineKeyboardButton("🌅 Фаджр", callback_data="mark_prayer_Фаджр"),
@@ -420,22 +472,18 @@ class IslamicBot:
             )
             return
         
-        # Подсчёт выполненных намазов
         completed = [s for s in stats if s['completed']]
         completed_count = len(completed)
         total_count = len(stats)
         percentage = (completed_count/total_count*100) if total_count > 0 else 0
         
-        # Подсчёт streak (дней подряд)
         streak = await self.calculate_streak(user_id)
         
-        # Статистика по намазам
         prayer_counts = {}
         for stat in completed:
             prayer_name = stat['prayer_name']
             prayer_counts[prayer_name] = prayer_counts.get(prayer_name, 0) + 1
         
-        # Формируем сообщение
         message = f"📊 СТАТИСТИКА НАМАЗОВ\n\n"
         message += f"📅 Период: последние 30 дней\n\n"
         message += f"✅ Выполнено: {completed_count} из {total_count}\n"
@@ -446,12 +494,10 @@ class IslamicBot:
         for prayer, count in sorted(prayer_counts.items()):
             message += f"  {prayer}: {count}\n"
         
-        # График последних 7 дней
         message += "\n📈 Последние 7 дней:\n"
         last_7_days = await self.get_last_7_days_chart(user_id)
         message += last_7_days
         
-        # Кнопки
         keyboard = [
             [
                 InlineKeyboardButton("🌅 Фаджр", callback_data="mark_prayer_Фаджр"),
@@ -475,7 +521,6 @@ class IslamicBot:
         current_date = datetime.now().date()
         
         while True:
-            # Проверяем, был ли хотя бы один намаз в этот день
             stats = await self.db.get_prayer_stats(user_id, days=1)
             day_stats = [s for s in stats if str(s['prayer_date']) == str(current_date) and s['completed']]
             
@@ -485,7 +530,7 @@ class IslamicBot:
             else:
                 break
             
-            if streak > 100:  # Ограничение для производительности
+            if streak > 100:
                 break
         
         return streak
@@ -498,13 +543,10 @@ class IslamicBot:
             date = datetime.now().date() - timedelta(days=i)
             date_str = date.strftime("%d.%m")
             
-            # Получаем намазы за этот день
             stats = await self.db.get_prayer_stats(user_id, days=7)
             day_stats = [s for s in stats if str(s['prayer_date']) == str(date) and s['completed']]
             
             completed_count = len(day_stats)
-            
-            # Рисуем график
             bars = "█" * completed_count + "░" * (5 - completed_count)
             chart += f"{date_str} {bars} {completed_count}/5\n"
         
@@ -514,7 +556,6 @@ class IslamicBot:
         """Отметить намаз как выполненный"""
         user_id = update.effective_user.id
         
-        # Если есть аргументы, обрабатываем напрямую
         if context.args:
             prayer_name = ' '.join(context.args)
             valid_prayers = ['Фаджр', 'Зухр', 'Аср', 'Магриб', 'Иша']
@@ -522,7 +563,6 @@ class IslamicBot:
                 await self.mark_prayer_completed(user_id, prayer_name, update)
                 return
         
-        # Показываем кнопки для выбора намаза
         keyboard = [
             [
                 InlineKeyboardButton("🌅 Фаджр", callback_data="mark_prayer_Фаджр"),
@@ -544,11 +584,9 @@ class IslamicBot:
         )
     
     async def mark_prayer_completed(self, user_id, prayer_name, update_or_query):
-        """Отметить намаз как выполненный (общая функция)"""
-        # Отмечаем в БД
+        """Отметить намаз как выполненный"""
         await self.db.mark_prayer_completed(user_id, prayer_name)
         
-        # Обновляем streak
         streak = await self.calculate_streak(user_id)
         
         message = f"✅ {prayer_name} отмечен как выполненный!\n\n"
@@ -563,13 +601,10 @@ class IslamicBot:
             elif streak == 100:
                 message += "\n👑 Невероятно! 100 дней подряд!"
         
-        # Отправляем ответ в зависимости от типа обновления
         if hasattr(update_or_query, 'edit_message_text'):
-            # Это callback query
             await update_or_query.answer()
             await update_or_query.edit_message_text(message)
         else:
-            # Это обычное сообщение
             await update_or_query.message.reply_text(message)
 
     async def find_mosques(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -618,7 +653,7 @@ class IslamicBot:
         await update.message.reply_text(message, parse_mode='Markdown', disable_web_page_preview=True)
     
     async def search_mosques_nominatim(self, city, country):
-        """Поиск мечетей через OpenStreetMap Nominatim"""
+        """Поиск мечетей через OpenStreetMap"""
         try:
             query = f"""
             [out:json];
@@ -708,17 +743,14 @@ class IslamicBot:
                 reply_markup=reply_markup
             )
         elif query.data.startswith("mark_prayer_"):
-            # Обработка отметки намаза
             prayer_name = query.data.replace("mark_prayer_", "")
             user_id = update.effective_user.id
             await self.mark_prayer_completed(user_id, prayer_name, query)
         elif query.data.startswith("set_city_"):
-            # Обработка выбора города
             city_data = query.data.replace("set_city_", "")
             user_id = update.effective_user.id
             
             if city_data == "input":
-                # Пользователь хочет ввести город вручную
                 await query.answer()
                 await query.edit_message_text(
                     "✏️ Введите название города:\n\n"
@@ -726,7 +758,6 @@ class IslamicBot:
                     "Или используйте команду: /setcity [название города]"
                 )
             else:
-                # Город выбран из списка
                 await self.set_user_city(user_id, city_data, query)
 
     async def toggle_notifications(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -755,7 +786,7 @@ class IslamicBot:
             app = web.Application()
             app.router.add_get('/', self.health_check_handler)
             app.router.add_get('/health', self.health_check_handler)
-            app.router.add_get('/healtz', self.health_check_handler)  # Для Render
+            app.router.add_get('/healtz', self.health_check_handler)
             
             runner = web.AppRunner(app)
             await runner.setup()
@@ -768,68 +799,31 @@ class IslamicBot:
         except Exception as e:
             logger.error(f"❌ Ошибка при запуске HTTP сервера: {e}")
     
-    async def keep_alive_ping(self):
-        """Keep-alive механизм - пинг самого себя каждые 10 минут"""
-        try:
-            port = int(os.getenv('PORT', 8080))
-            url = f"http://localhost:{port}/health"
-            
-            while True:
-                await asyncio.sleep(600)  # 10 минут
-                try:
-                    async with ClientSession() as session:
-                        async with session.get(url, timeout=ClientTimeout(total=5)) as response:
-                            if response.status == 200:
-                                logger.debug("Keep-alive ping успешен")
-                except Exception as e:
-                    logger.warning(f"Keep-alive ping не удался: {e}")
-        except Exception as e:
-            logger.error(f"Ошибка в keep-alive механизме: {e}")
-    
     async def post_init(self, application: Application) -> None:
         """Инициализация после запуска"""
-        # Очистка webhook перед запуском polling с несколькими попытками
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                await application.bot.delete_webhook(drop_pending_updates=True)
-                logger.info("Webhook успешно очищен перед запуском polling")
-                break
-            except Conflict as e:
-                logger.warning(f"Конфликт при очистке webhook (попытка {attempt + 1}/{max_retries}): {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)  # Экспоненциальная задержка
-                else:
-                    logger.error("Не удалось очистить webhook после всех попыток")
-            except Exception as e:
-                logger.warning(f"Ошибка при очистке webhook (попытка {attempt + 1}/{max_retries}): {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1)
+        try:
+            await application.bot.delete_webhook(drop_pending_updates=True)
+            logger.info("✅ Webhook успешно очищен")
+        except Exception as e:
+            logger.warning(f"ℹ️ Очистка webhook: {e}")
         
-        # Запускаем HTTP сервер для health check
-        await self.start_http_server()
+        self.keep_alive.start()
         
-        # Запускаем keep-alive механизм
-        self.keep_alive_task = asyncio.create_task(self.keep_alive_ping())
-        
-        await self.db.init_db()
         self.scheduler.start()
-        logger.info("База данных и планировщик запущены!")
+        logger.info("✅ Планировщик запущен!")
     
     async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Обработчик ошибок"""
         logger.error(f"Ошибка при обработке обновления: {context.error}")
         
         if isinstance(context.error, Conflict):
-            logger.warning("Обнаружен конфликт: другой экземпляр бота уже запущен. "
-                          "Убедитесь, что запущен только один экземпляр.")
-            # Пытаемся очистить webhook и подождать перед повторной попыткой
+            logger.warning("Обнаружен конфликт: другой экземпляр бота уже запущен.")
             try:
                 await asyncio.sleep(5)
                 await self.app.bot.delete_webhook(drop_pending_updates=True)
                 logger.info("Webhook очищен после конфликта")
             except Exception as e:
-                logger.error(f"Не удалось очистить webhook после конфликта: {e}")
+                logger.error(f"Не удалось очистить webhook: {e}")
         elif isinstance(context.error, RetryAfter):
             logger.warning(f"Превышен лимит запросов. Повтор через {context.error.retry_after} секунд")
         elif isinstance(context.error, (TimedOut, NetworkError)):
@@ -837,62 +831,113 @@ class IslamicBot:
         else:
             logger.error(f"Необработанная ошибка: {context.error}", exc_info=context.error)
 
+    async def start_services(self):
+        """Запуск HTTP сервера и БД перед ботом"""
+        logger.info("🌐 Запуск HTTP сервера...")
+        await self.start_http_server()
+        logger.info("💾 Инициализация базы данных...")
+        await self.db.init_db()
+        logger.info("✅ Сервисы запущены!")
+    
     def run(self):
         """Запуск бота"""
-        self.app = Application.builder().token(self.token).post_init(self.post_init).build()
+        logger.info("=" * 60)
+        logger.info("🤖 ЗАПУСК ИСЛАМСКОГО БОТА")
+        logger.info("=" * 60)
         
-        # Регистрация обработчиков
-        self.app.add_handler(CommandHandler("start", self.start))
-        self.app.add_handler(CommandHandler("setcity", self.set_city))
-        self.app.add_handler(CommandHandler("prayer", self.prayer_times_command))
-        self.app.add_handler(CommandHandler("notifications", self.toggle_notifications))
-        self.app.add_handler(CommandHandler("stats", self.show_stats))
-        self.app.add_handler(CommandHandler("markprayer", self.mark_prayer_handler))
-        self.app.add_handler(CommandHandler("mosques", self.find_mosques))
-        self.app.add_handler(CallbackQueryHandler(self.handle_callback))
-        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
-        
-        # Регистрация обработчика ошибок
-        self.app.add_error_handler(self.error_handler)
-        
-        logger.info("Бот запущен!")
-        
-        # Для Python 3.14+ нужно явно создать event loop
         if sys.platform == 'win32':
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         
-        # Создаем новый event loop если его нет (для Python 3.14+)
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
         
-        # Используем run_polling с дополнительными параметрами для надежности
+        logger.info("⚡ Запуск критически важных сервисов...")
+        loop.run_until_complete(self.start_services())
+        
         try:
-            self.app.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,
-                close_loop=False,
-                stop_signals=None  # Отключаем обработку сигналов для Render
-            )
-        except Conflict as e:
-            logger.error(f"Критический конфликт при запуске polling: {e}")
-            logger.info("Попытка повторного запуска через 10 секунд...")
-            time.sleep(10)
-            # Повторная попытка
+            logger.info("🔐 Инициализация Telegram бота...")
+            
+            self.app = Application.builder().token(self.token).post_init(self.post_init).build()
+            
+            self.app.add_handler(CommandHandler("start", self.start))
+            self.app.add_handler(CommandHandler("setcity", self.set_city))
+            self.app.add_handler(CommandHandler("prayer", self.prayer_times_command))
+            self.app.add_handler(CommandHandler("notifications", self.toggle_notifications))
+            self.app.add_handler(CommandHandler("stats", self.show_stats))
+            self.app.add_handler(CommandHandler("markprayer", self.mark_prayer_handler))
+            self.app.add_handler(CommandHandler("mosques", self.find_mosques))
+            self.app.add_handler(CallbackQueryHandler(self.handle_callback))
+            self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+            
+            self.app.add_error_handler(self.error_handler)
+            
+            logger.info("🚀 Запуск polling...")
+            
             self.app.run_polling(
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=True,
                 close_loop=False,
                 stop_signals=None
             )
+            
+        except Exception as e:
+            logger.error("=" * 60)
+            logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
+            logger.error("=" * 60)
+            
+            if "Logged out" in str(e) or "Bad Request" in str(e):
+                logger.error("🔑 ПРОБЛЕМА С ТОКЕНОМ!")
+                logger.error("")
+                logger.error("📋 ЧТО ДЕЛАТЬ:")
+                logger.error("   1. Откройте @BotFather в Telegram")
+                logger.error("   2. Отправьте /mybots")
+                logger.error("   3. Выберите вашего бота")
+                logger.error("   4. Нажмите 'API Token'")
+                logger.error("   5. Нажмите 'Revoke current token'")
+                logger.error("   6. Скопируйте новый токен")
+                logger.error("   7. Обновите BOT_TOKEN на Render")
+                logger.error("")
+                logger.error("⚠️ HTTP сервер продолжает работать для health check")
+                logger.error("=" * 60)
+                
+                logger.info("💓 Бот не запущен, но HTTP сервер работает...")
+                try:
+                    while True:
+                        time.sleep(60)
+                        logger.info("💓 HTTP сервер активен...")
+                except KeyboardInterrupt:
+                    logger.info("👋 Остановка приложения...")
+            else:
+                logger.error(f"⚠️ Неожиданная ошибка: {e}")
+                logger.info("🔄 HTTP сервер продолжает работать")
+                try:
+                    while True:
+                        time.sleep(60)
+                        logger.info("💓 HTTP сервер активен...")
+                except KeyboardInterrupt:
+                    logger.info("👋 Остановка приложения...")
+
 
 if __name__ == '__main__':
     BOT_TOKEN = os.getenv('BOT_TOKEN')
+    RENDER_URL = os.getenv('RENDER_EXTERNAL_URL')
     
     if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN не найден в .env файле!")
+        raise ValueError("❌ BOT_TOKEN не найден в переменных окружения!")
+    
+    if not RENDER_URL:
+        logger.warning("=" * 60)
+        logger.warning("⚠️  ВНИМАНИЕ: RENDER_EXTERNAL_URL не установлен!")
+        logger.warning("📝 Добавьте в Environment Variables на Render:")
+        logger.warning("   RENDER_EXTERNAL_URL=https://your-app-name.onrender.com")
+        logger.warning("🔄 Keep-alive не будет работать без этой переменной")
+        logger.warning("💡 Бот будет засыпать через 15 минут неактивности")
+        logger.warning("=" * 60)
+    else:
+        logger.info(f"✅ RENDER_EXTERNAL_URL установлен: {RENDER_URL}")
     
     bot = IslamicBot(BOT_TOKEN)
     bot.run()
