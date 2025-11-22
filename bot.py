@@ -16,6 +16,7 @@ from aiohttp.web import Response
 from dotenv import load_dotenv
 from database import Database
 from duas_data import get_duas_by_category, get_all_categories, search_duas
+from hadiths_data import get_all_hadiths, get_random_hadith, get_hadith_by_day
 
 # Загрузка переменных из .env
 load_dotenv()
@@ -133,7 +134,7 @@ class IslamicBot:
         keyboard = [
             [KeyboardButton("🕌 Время намаза"), KeyboardButton("📿 Дуа")],
             [KeyboardButton("📖 Аят дня"), KeyboardButton("📊 Статистика")],
-            [KeyboardButton("🕌 Найти мечеть"), KeyboardButton("⚙️ Настройки")]
+            [KeyboardButton("📚 Хадисы"), KeyboardButton("⚙️ Настройки")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
@@ -209,10 +210,6 @@ class IslamicBot:
             message = f"🕌 Время намазов для {city}:\n\n"
             for prayer, time in times.items():
                 message += f"{prayer}: {time}\n"
-            
-            next_prayer = self.get_next_prayer(times)
-            if next_prayer:
-                message += f"\n⏰ Следующий намаз: {next_prayer}"
             
             await update.message.reply_text(message)
         else:
@@ -375,6 +372,45 @@ class IslamicBot:
             "Воистину, Аллах - с терпеливыми.\"\n\n"
             "(Сура Аль-Бакара, 2:153)"
         )
+
+    async def daily_hadith(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Хадис дня"""
+        # Выбираем хадис на основе дня месяца для разнообразия
+        day = datetime.now().day
+        hadith = get_hadith_by_day(day)
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Другой хадис", callback_data="next_hadith")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        message = (
+            f"📚 Хадис дня\n\n"
+            f"💬 {hadith['text']}\n\n"
+            f"📖 {hadith['source']}"
+        )
+        
+        await update.message.reply_text(message, reply_markup=reply_markup)
+    
+    async def show_next_hadith(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать следующий случайный хадис"""
+        query = update.callback_query
+        await query.answer()
+        
+        hadith = get_random_hadith()
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Другой хадис", callback_data="next_hadith")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        message = (
+            f"📚 Хадис\n\n"
+            f"💬 {hadith['text']}\n\n"
+            f"📖 {hadith['source']}"
+        )
+        
+        await query.edit_message_text(message, reply_markup=reply_markup)
 
     async def daily_dua(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Меню с категориями дуа"""
@@ -707,8 +743,8 @@ class IslamicBot:
             await self.islamic_calendar(update, context)
         elif text == "📊 Статистика":
             await self.show_stats(update, context)
-        elif text == "🕌 Найти мечеть":
-            await self.find_mosques(update, context)
+        elif text == "📚 Хадисы":
+            await self.daily_hadith(update, context)
         elif text == "⚙️ Настройки":
             await update.message.reply_text(
                 "⚙️ Настройки:\n\n"
@@ -746,6 +782,8 @@ class IslamicBot:
             prayer_name = query.data.replace("mark_prayer_", "")
             user_id = update.effective_user.id
             await self.mark_prayer_completed(user_id, prayer_name, query)
+        elif query.data == "next_hadith":
+            await self.show_next_hadith(update, context)
         elif query.data.startswith("set_city_"):
             city_data = query.data.replace("set_city_", "")
             user_id = update.effective_user.id
