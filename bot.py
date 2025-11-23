@@ -141,10 +141,15 @@ class IslamicBot:
         keyboard = [
             [KeyboardButton("🕌 Время намаза"), KeyboardButton("📿 Дуа")],
             [KeyboardButton("📖 Аят дня"), KeyboardButton("📊 Статистика")],
-            [KeyboardButton("📚 Хадисы"), KeyboardButton(web_app=WebAppInfo(url=webapp_url, text="📱 Интерактивная статистика"))],
-            [KeyboardButton("⚙️ Настройки")]
+            [KeyboardButton("📚 Хадисы"), KeyboardButton("⚙️ Настройки")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
+        # Добавляем inline кнопку для Mini App в приветственное сообщение
+        inline_keyboard = [
+            [InlineKeyboardButton("📱 Открыть интерактивную статистику", web_app=WebAppInfo(url=webapp_url))]
+        ]
+        inline_markup = InlineKeyboardMarkup(inline_keyboard)
         
         welcome_message = (
             "Ассаляму алейкум! ☪️\n\n"
@@ -159,7 +164,16 @@ class IslamicBot:
             "/setcity Алматы"
         )
         
-        await update.message.reply_text(welcome_message, reply_markup=reply_markup)
+        await update.message.reply_text(
+            welcome_message + "\n\n💡 Попробуйте интерактивную статистику ниже 👇",
+            reply_markup=reply_markup
+        )
+        
+        # Отправляем отдельное сообщение с кнопкой Mini App
+        await update.message.reply_text(
+            "📱 Откройте интерактивную статистику с графиками и визуализацией:",
+            reply_markup=inline_markup
+        )
 
     def get_prayer_times_sync(self, city, country):
         """Синхронное получение времени намазов через Aladhan API"""
