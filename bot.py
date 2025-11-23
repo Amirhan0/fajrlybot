@@ -1,5 +1,5 @@
 import logging
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.error import Conflict, RetryAfter, TimedOut, NetworkError
 import requests
@@ -11,6 +11,7 @@ import asyncio
 import os
 import sys
 import time
+import json
 from aiohttp import web, ClientSession, ClientTimeout
 from aiohttp.web import Response
 from dotenv import load_dotenv
@@ -131,10 +132,17 @@ class IslamicBot:
         
         await self.db.add_user(user_id, username, first_name)
         
+        # Получаем URL для Mini App
+        webapp_url = os.getenv('RENDER_EXTERNAL_URL', 'http://localhost:8080')
+        if not webapp_url.startswith('http'):
+            webapp_url = f'https://{webapp_url}'
+        webapp_url = f"{webapp_url.rstrip('/')}/webapp"
+        
         keyboard = [
             [KeyboardButton("🕌 Время намаза"), KeyboardButton("📿 Дуа")],
             [KeyboardButton("📖 Аят дня"), KeyboardButton("📊 Статистика")],
-            [KeyboardButton("📚 Хадисы"), KeyboardButton("⚙️ Настройки")]
+            [KeyboardButton("📚 Хадисы"), KeyboardButton(web_app=WebAppInfo(url=webapp_url, text="📱 Интерактивная статистика"))],
+            [KeyboardButton("⚙️ Настройки")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
@@ -169,13 +177,17 @@ class IslamicBot:
             
             if data['code'] == 200:
                 timings = data['data']['timings']
+                # Получаем часовой пояс из ответа API
+                timezone_str = data['data']['meta'].get('timezone', 'Asia/Almaty')
+                
                 return {
                     'Фаджр': timings['Fajr'],
                     'Восход': timings['Sunrise'],
                     'Зухр': timings['Dhuhr'],
                     'Аср': timings['Asr'],
                     'Магриб': timings['Maghrib'],
-                    'Иша': timings['Isha']
+                    'Иша': timings['Isha'],
+                    'timezone': timezone_str
                 }
             return None
         except Exception as e:
@@ -207,9 +219,11 @@ class IslamicBot:
         times = await self.get_prayer_times(city, country)
         
         if times:
-            message = f"🕌 Время намазов для {city}:\n\n"
+            timezone_info = times.get('timezone', 'Asia/Almaty')
+            message = f"🕌 Время намазов для {city} ({timezone_info}):\n\n"
             for prayer, time in times.items():
-                message += f"{prayer}: {time}\n"
+                if prayer != 'timezone':  # Пропускаем часовой пояс в списке
+                    message += f"{prayer}: {time}\n"
             
             await update.message.reply_text(message)
         else:
@@ -281,7 +295,8 @@ class IslamicBot:
                 InlineKeyboardButton("🏘 Усть-Каменогорск", callback_data="set_city_Oskemen")
             ],
             [
-                InlineKeyboardButton("✏️ Ввести другой город", callback_data="set_city_input")
+                InlineKeyboardButton("🌴 Дубай", callback_data="set_city_Dubai"),
+                InlineKeyboardButton("✏️ Другой город", callback_data="set_city_input")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -302,19 +317,39 @@ class IslamicBot:
             'oskemen': 'Oskemen', 'almaty': 'Almaty',
             'astana': 'Astana', 'shymkent': 'Shymkent',
             'karaganda': 'Karaganda', 'aktobe': 'Aktobe',
-            'taraz': 'Taraz', 'pavlodar': 'Pavlodar'
+            'taraz': 'Taraz', 'pavlodar': 'Pavlodar',
+            'дубай': 'Dubai', 'dubai': 'Dubai', 'дубаи': 'Dubai'
         }
         
         city_lower = city.lower().strip()
         normalized_city = city_mapping.get(city_lower, city)
-        country = "Kazakhstan"
+        
+        # Определяем страну по городу
+        country_mapping = {
+            'Dubai': 'United Arab Emirates',
+            'Almaty': 'Kazakhstan', 'Astana': 'Kazakhstan',
+            'Shymkent': 'Kazakhstan', 'Karaganda': 'Kazakhstan',
+            'Aktobe': 'Kazakhstan', 'Taraz': 'Kazakhstan',
+            'Pavlodar': 'Kazakhstan', 'Oskemen': 'Kazakhstan'
+        }
+        country = country_mapping.get(normalized_city, 'Kazakhstan')
         
         await self.db.update_user_city(user_id, normalized_city, country)
         
-        message = (
-            f"✅ Город установлен: {normalized_city}\n\n"
-            f"Теперь вы можете узнать время намазов, нажав на кнопку '🕌 Время намаза'"
-        )
+        # Получаем времена намазов для проверки
+        times = await self.get_prayer_times(normalized_city, country)
+        if times:
+            timezone_info = times.get('timezone', 'Asia/Almaty')
+            message = (
+                f"✅ Город установлен: {normalized_city}, {country}\n"
+                f"🕐 Часовой пояс: {timezone_info}\n\n"
+                f"Теперь вы можете узнать время намазов, нажав на кнопку '🕌 Время намаза'"
+            )
+        else:
+            message = (
+                f"✅ Город установлен: {normalized_city}, {country}\n\n"
+                f"⚠️ Не удалось получить времена намазов. Проверьте правильность названия города."
+            )
         
         if hasattr(update_or_query, 'edit_message_text'):
             await update_or_query.answer()
@@ -331,6 +366,18 @@ class IslamicBot:
         if not times:
             return
         
+        # Получаем часовой пояс из ответа API или используем сохраненный
+        timezone_str = times.get('timezone', 'Asia/Almaty')
+        try:
+            user_timezone = pytz.timezone(timezone_str)
+        except:
+            user_timezone = pytz.timezone('Asia/Almaty')
+            timezone_str = 'Asia/Almaty'
+        
+        # Сохраняем часовой пояс пользователя в БД
+        await self.db.update_user_timezone(user_id, timezone_str)
+        
+        # Удаляем старые задачи для этого пользователя
         for job in self.scheduler.get_jobs():
             if str(user_id) in job.id:
                 job.remove()
@@ -343,16 +390,19 @@ class IslamicBot:
             'Иша': times['Иша']
         }
         
+        # Планируем уведомления с правильным часовым поясом для каждого пользователя
         for prayer_name, prayer_time in prayers.items():
             hour, minute = map(int, prayer_time.split(':'))
             
             self.scheduler.add_job(
                 self.send_prayer_notification,
-                CronTrigger(hour=hour, minute=minute),
+                CronTrigger(hour=hour, minute=minute, timezone=user_timezone),
                 args=[user_id, prayer_name],
                 id=f"prayer_{user_id}_{prayer_name}",
                 replace_existing=True
             )
+        
+        logger.info(f"✅ Напоминания о намазах запланированы для пользователя {user_id} ({city}, {timezone_str})")
 
     async def send_prayer_notification(self, user_id, prayer_name):
         """Отправка напоминания о намазе"""
@@ -534,6 +584,12 @@ class IslamicBot:
         last_7_days = await self.get_last_7_days_chart(user_id)
         message += last_7_days
         
+        # Получаем URL для Mini App
+        webapp_url = os.getenv('RENDER_EXTERNAL_URL', 'http://localhost:8080')
+        if not webapp_url.startswith('http'):
+            webapp_url = f'https://{webapp_url}'
+        webapp_url = f"{webapp_url.rstrip('/')}/webapp"
+        
         keyboard = [
             [
                 InlineKeyboardButton("🌅 Фаджр", callback_data="mark_prayer_Фаджр"),
@@ -545,6 +601,9 @@ class IslamicBot:
             ],
             [
                 InlineKeyboardButton("🌙 Иша", callback_data="mark_prayer_Иша")
+            ],
+            [
+                InlineKeyboardButton("📱 Интерактивная статистика", web_app=WebAppInfo(url=webapp_url))
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -743,6 +802,9 @@ class IslamicBot:
             await self.islamic_calendar(update, context)
         elif text == "📊 Статистика":
             await self.show_stats(update, context)
+        elif "📱 Интерактивная статистика" in text or "📱" in text:
+            # Это обрабатывается через WebApp кнопку, но на всякий случай
+            pass
         elif text == "📚 Хадисы":
             await self.daily_hadith(update, context)
         elif text == "⚙️ Настройки":
@@ -817,14 +879,115 @@ class IslamicBot:
         """Обработчик health check запросов"""
         return Response(text="OK", status=200)
     
+    async def stats_api_handler(self, request):
+        """API endpoint для получения статистики пользователя"""
+        try:
+            user_id = request.query.get('user_id')
+            if not user_id:
+                return Response(
+                    text='{"error": "user_id required"}',
+                    status=400,
+                    content_type='application/json',
+                    headers={'Access-Control-Allow-Origin': '*'}
+                )
+            
+            user_id = int(user_id)
+            stats = await self.db.get_prayer_stats(user_id, days=30)
+            
+            completed = [s for s in stats if s['completed']]
+            completed_count = len(completed)
+            total_count = len(stats)
+            percentage = (completed_count/total_count*100) if total_count > 0 else 0
+            
+            streak = await self.calculate_streak(user_id)
+            
+            prayer_counts = {}
+            for stat in completed:
+                prayer_name = stat['prayer_name']
+                prayer_counts[prayer_name] = prayer_counts.get(prayer_name, 0) + 1
+            
+            # График последних 7 дней
+            week_chart = []
+            for i in range(6, -1, -1):
+                date = datetime.now().date() - timedelta(days=i)
+                date_str = date.strftime("%d.%m")
+                
+                day_stats = [s for s in stats if str(s['prayer_date']) == str(date) and s['completed']]
+                completed_count_day = len(day_stats)
+                
+                week_chart.append({
+                    'date': date_str,
+                    'completed': completed_count_day
+                })
+            
+            response_data = {
+                'completed_count': completed_count,
+                'total_count': total_count,
+                'percentage': percentage,
+                'streak': streak,
+                'prayer_counts': prayer_counts,
+                'week_chart': week_chart
+            }
+            
+            return Response(
+                text=json.dumps(response_data, ensure_ascii=False),
+                status=200,
+                content_type='application/json',
+                headers={'Access-Control-Allow-Origin': '*'}
+            )
+        except ValueError:
+            return Response(
+                text='{"error": "Invalid user_id"}',
+                status=400,
+                content_type='application/json',
+                headers={'Access-Control-Allow-Origin': '*'}
+            )
+        except Exception as e:
+            logger.error(f"Ошибка в stats API: {e}")
+            return Response(
+                text='{"error": "Internal server error"}',
+                status=500,
+                content_type='application/json',
+                headers={'Access-Control-Allow-Origin': '*'}
+            )
+    
+    async def webapp_handler(self, request):
+        """Обработчик для Mini App"""
+        try:
+            # Получаем user_id из query параметров для передачи в Mini App
+            user_id = request.query.get('user_id', '')
+            
+            with open('static/index.html', 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Добавляем user_id в URL если есть
+            if user_id:
+                content = content.replace(
+                    'loadStats();',
+                    f'window.userIdFromUrl = {user_id}; loadStats();'
+                )
+            
+            return Response(
+                text=content,
+                content_type='text/html',
+                headers={'Access-Control-Allow-Origin': '*'}
+            )
+        except FileNotFoundError:
+            return Response(text="Mini App не найден", status=404)
+        except Exception as e:
+            logger.error(f"Ошибка загрузки Mini App: {e}")
+            return Response(text="Ошибка загрузки", status=500)
+    
     async def start_http_server(self):
-        """Запуск HTTP сервера для health check"""
+        """Запуск HTTP сервера для health check и Mini App"""
         try:
             port = int(os.getenv('PORT', 8080))
             app = web.Application()
             app.router.add_get('/', self.health_check_handler)
             app.router.add_get('/health', self.health_check_handler)
             app.router.add_get('/healtz', self.health_check_handler)
+            app.router.add_get('/webapp', self.webapp_handler)
+            app.router.add_get('/api/stats', self.stats_api_handler)
             
             runner = web.AppRunner(app)
             await runner.setup()
@@ -834,8 +997,30 @@ class IslamicBot:
             self.http_server = runner
             logger.info(f"✅ HTTP сервер запущен на 0.0.0.0:{port}")
             logger.info(f"📍 Health check endpoints: /, /health, /healtz")
+            logger.info(f"📍 Mini App: /webapp")
+            logger.info(f"📍 Stats API: /api/stats")
         except Exception as e:
             logger.error(f"❌ Ошибка при запуске HTTP сервера: {e}")
+    
+    async def update_all_users_prayer_times(self):
+        """Ежедневное обновление времен намазов для всех пользователей"""
+        try:
+            users = await self.db.get_all_users_with_city()
+            logger.info(f"🔄 Обновление времен намазов для {len(users)} пользователей...")
+            
+            for user in users:
+                user_id = user['user_id']
+                city = user['city']
+                country = user.get('country', 'Kazakhstan')
+                
+                try:
+                    await self.schedule_prayer_notifications(user_id, city, country)
+                except Exception as e:
+                    logger.error(f"Ошибка обновления времен для пользователя {user_id} ({city}): {e}")
+            
+            logger.info("✅ Обновление времен намазов завершено")
+        except Exception as e:
+            logger.error(f"Ошибка при обновлении времен намазов: {e}")
     
     async def post_init(self, application: Application) -> None:
         """Инициализация после запуска"""
@@ -846,6 +1031,17 @@ class IslamicBot:
             logger.warning(f"ℹ️ Очистка webhook: {e}")
         
         self.keep_alive.start()
+        
+        # Планируем ежедневное обновление времен намазов в 00:05 по UTC
+        self.scheduler.add_job(
+            self.update_all_users_prayer_times,
+            CronTrigger(hour=0, minute=5, timezone=pytz.UTC),
+            id="daily_prayer_times_update",
+            replace_existing=True
+        )
+        
+        # Также обновляем сразу при запуске
+        asyncio.create_task(self.update_all_users_prayer_times())
         
         self.scheduler.start()
         logger.info("✅ Планировщик запущен!")

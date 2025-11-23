@@ -306,6 +306,31 @@ class Database:
             async with self.pool.acquire() as conn:
                 return await conn.fetchval('SELECT COUNT(*) FROM users')
     
+    async def get_all_users_with_city(self):
+        """Получить всех пользователей с указанным городом"""
+        if self.use_sqlite:
+            import aiosqlite
+            async with aiosqlite.connect('islamic_bot.db') as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute('SELECT user_id, city, country, timezone, notifications_enabled FROM users WHERE city IS NOT NULL') as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(row) for row in rows]
+        else:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch('SELECT user_id, city, country, timezone, notifications_enabled FROM users WHERE city IS NOT NULL')
+                return [dict(row) for row in rows]
+    
+    async def update_user_timezone(self, user_id, timezone):
+        """Обновить часовой пояс пользователя"""
+        if self.use_sqlite:
+            import aiosqlite
+            async with aiosqlite.connect('islamic_bot.db') as db:
+                await db.execute('UPDATE users SET timezone = ? WHERE user_id = ?', (timezone, user_id))
+                await db.commit()
+        else:
+            async with self.pool.acquire() as conn:
+                await conn.execute('UPDATE users SET timezone = $1 WHERE user_id = $2', timezone, user_id)
+    
     async def add_dua(self, title, arabic, transcription, translation, category=None):
         """Добавить дуа в базу"""
         if not self.use_sqlite:

@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>📊 Моя статистика</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 100%;
+            margin: 0 auto;
+        }
+        
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+        
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+        
+        .stats-card {
+            background: white;
+            border-radius: 20px;
+            padding: 25px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 0;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        
+        .stat-row:last-child {
+            border-bottom: none;
+        }
+        
+        .stat-label {
+            font-size: 16px;
+            color: #666;
+        }
+        
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #667eea;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background: #f0f0f0;
+            border-radius: 15px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            border-radius: 15px;
+            transition: width 0.5s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        
+        .streak-card {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            border-radius: 20px;
+            padding: 25px;
+            text-align: center;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        .streak-number {
+            font-size: 48px;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        
+        .prayer-stats {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+            margin-top: 20px;
+        }
+        
+        .prayer-item {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 15px;
+            text-align: center;
+        }
+        
+        .prayer-name {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        
+        .prayer-count {
+            font-size: 24px;
+            font-weight: bold;
+            color: #667eea;
+        }
+        
+        .loading {
+            text-align: center;
+            color: white;
+            padding: 50px;
+            font-size: 18px;
+        }
+        
+        .error {
+            background: #ff6b6b;
+            color: white;
+            padding: 20px;
+            border-radius: 15px;
+            text-align: center;
+            margin: 20px 0;
+        }
+        
+        .chart-container {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 15px;
+        }
+        
+        .chart-title {
+            font-size: 16px;
+            color: #666;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+        
+        .chart-bar {
+            display: flex;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        
+        .chart-label {
+            width: 60px;
+            font-size: 12px;
+            color: #666;
+        }
+        
+        .chart-visual {
+            flex: 1;
+            height: 20px;
+            background: #e0e0e0;
+            border-radius: 10px;
+            margin: 0 10px;
+            overflow: hidden;
+        }
+        
+        .chart-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            border-radius: 10px;
+            transition: width 0.5s ease;
+        }
+        
+        .chart-value {
+            width: 40px;
+            text-align: right;
+            font-size: 12px;
+            font-weight: bold;
+            color: #667eea;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 Моя статистика</h1>
+            <p>Твой духовный прогресс</p>
+        </div>
+        
+        <div id="loading" class="loading">
+            ⏳ Загрузка данных...
+        </div>
+        
+        <div id="content" style="display: none;">
+            <div class="streak-card">
+                <div>🔥 Текущий streak</div>
+                <div class="streak-number" id="streak">0</div>
+                <div>дней подряд</div>
+            </div>
+            
+            <div class="stats-card">
+                <div class="stat-row">
+                    <div class="stat-label">✅ Выполнено намазов</div>
+                    <div class="stat-value" id="completed">0</div>
+                </div>
+                <div class="stat-row">
+                    <div class="stat-label">📅 Всего намазов</div>
+                    <div class="stat-value" id="total">0</div>
+                </div>
+                <div class="stat-row">
+                    <div class="stat-label">📈 Процент выполнения</div>
+                    <div class="stat-value" id="percentage">0%</div>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill" style="width: 0%">0%</div>
+                </div>
+            </div>
+            
+            <div class="stats-card">
+                <div class="chart-title">📊 По намазам (последние 30 дней)</div>
+                <div id="prayerStats" class="prayer-stats"></div>
+            </div>
+            
+            <div class="stats-card">
+                <div class="chart-title">📈 Последние 7 дней</div>
+                <div id="weekChart" class="chart-container"></div>
+            </div>
+        </div>
+        
+        <div id="error" class="error" style="display: none;"></div>
+    </div>
+    
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.ready();
+        tg.expand();
+        
+        // Получаем user_id из initData или URL
+        let userId = null;
+        try {
+            const initData = tg.initDataUnsafe;
+            if (initData && initData.user && initData.user.id) {
+                userId = initData.user.id;
+            }
+        } catch (e) {
+            console.log('initData not available, trying URL');
+        }
+        
+        // Если не получили из initData, пробуем из URL или глобальной переменной
+        if (!userId) {
+            const urlParams = new URLSearchParams(window.location.search);
+            userId = urlParams.get('user_id') || window.userIdFromUrl;
+        }
+        
+        console.log('User ID:', userId);
+        
+        async function loadStats() {
+            // Если userId еще не определен, пробуем еще раз получить
+            if (!userId) {
+                try {
+                    const initData = tg.initDataUnsafe;
+                    if (initData && initData.user && initData.user.id) {
+                        userId = initData.user.id;
+                    }
+                } catch (e) {
+                    console.log('Still no user ID');
+                }
+            }
+            
+            if (!userId) {
+                showError('Не удалось определить пользователя. Пожалуйста, откройте Mini App через кнопку в боте.');
+                return;
+            }
+            
+            try {
+                // Используем полный URL для API
+                const baseUrl = window.location.origin;
+                const response = await fetch(`${baseUrl}/api/stats?user_id=${userId}`);
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.error || 'Ошибка загрузки данных');
+                }
+                
+                const data = await response.json();
+                displayStats(data);
+            } catch (error) {
+                console.error('Error loading stats:', error);
+                showError('Ошибка загрузки статистики: ' + error.message);
+            }
+        }
+        
+        function displayStats(data) {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('content').style.display = 'block';
+            
+            // Streak
+            document.getElementById('streak').textContent = data.streak || 0;
+            
+            // Основная статистика
+            document.getElementById('completed').textContent = data.completed_count || 0;
+            document.getElementById('total').textContent = data.total_count || 0;
+            const percentage = data.percentage || 0;
+            document.getElementById('percentage').textContent = percentage.toFixed(1) + '%';
+            
+            // Progress bar
+            const progressFill = document.getElementById('progressFill');
+            progressFill.style.width = percentage + '%';
+            progressFill.textContent = percentage.toFixed(1) + '%';
+            
+            // Статистика по намазам
+            const prayerStatsDiv = document.getElementById('prayerStats');
+            prayerStatsDiv.innerHTML = '';
+            
+            const prayerNames = {
+                'Фаджр': '🌅',
+                'Зухр': '☀️',
+                'Аср': '🌤',
+                'Магриб': '🌆',
+                'Иша': '🌙'
+            };
+            
+            for (const [prayer, count] of Object.entries(data.prayer_counts || {})) {
+                const emoji = prayerNames[prayer] || '🕌';
+                const item = document.createElement('div');
+                item.className = 'prayer-item';
+                item.innerHTML = `
+                    <div class="prayer-name">${emoji} ${prayer}</div>
+                    <div class="prayer-count">${count}</div>
+                `;
+                prayerStatsDiv.appendChild(item);
+            }
+            
+            // График последних 7 дней
+            const weekChartDiv = document.getElementById('weekChart');
+            weekChartDiv.innerHTML = '';
+            
+            if (data.week_chart && data.week_chart.length > 0) {
+                data.week_chart.forEach(day => {
+                    const bar = document.createElement('div');
+                    bar.className = 'chart-bar';
+                    const percentage = (day.completed / 5) * 100;
+                    bar.innerHTML = `
+                        <div class="chart-label">${day.date}</div>
+                        <div class="chart-visual">
+                            <div class="chart-fill" style="width: ${percentage}%"></div>
+                        </div>
+                        <div class="chart-value">${day.completed}/5</div>
+                    `;
+                    weekChartDiv.appendChild(bar);
+                });
+            } else {
+                weekChartDiv.innerHTML = '<div style="text-align: center; color: #666;">Нет данных за последние 7 дней</div>';
+            }
+        }
+        
+        function showError(message) {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('error').style.display = 'block';
+            document.getElementById('error').textContent = message;
+        }
+        
+        // Загружаем статистику при открытии
+        loadStats();
+        
+        // Обновляем каждые 30 секунд
+        setInterval(loadStats, 30000);
+    </script>
+</body>
+</html>
+
