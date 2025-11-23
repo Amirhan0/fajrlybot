@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>🕌 Время намазов</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0f5132 0%, #198754 50%, #0f5132 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+            position: relative;
+            overflow-x: hidden;
+        }
+        
+        /* Исламский орнамент (декоративный элемент) */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-image: 
+                radial-gradient(circle at 20% 50%, rgba(255,255,255,0.03) 0%, transparent 50%),
+                radial-gradient(circle at 80% 50%, rgba(255,255,255,0.03) 0%, transparent 50%);
+            pointer-events: none;
+            z-index: 0;
+        }
+        
+        .container {
+            max-width: 100%;
+            margin: 0 auto;
+            position: relative;
+            z-index: 1;
+        }
+        
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+        }
+        
+        .header h1 {
+            font-size: 32px;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .header .city {
+            font-size: 18px;
+            opacity: 0.9;
+            margin-top: 5px;
+        }
+        
+        .header .date {
+            font-size: 14px;
+            opacity: 0.8;
+            margin-top: 5px;
+        }
+        
+        .prayer-card {
+            background: white;
+            border-radius: 20px;
+            padding: 20px;
+            margin-bottom: 15px;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.2);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: transform 0.2s, box-shadow 0.2s;
+            border-left: 5px solid #198754;
+        }
+        
+        .prayer-card:active {
+            transform: scale(0.98);
+        }
+        
+        .prayer-card.active {
+            background: linear-gradient(135deg, #198754 0%, #0f5132 100%);
+            color: white;
+            border-left-color: #ffd700;
+            box-shadow: 0 10px 30px rgba(25, 135, 84, 0.4);
+        }
+        
+        .prayer-info {
+            flex: 1;
+        }
+        
+        .prayer-name {
+            font-size: 20px;
+            font-weight: bold;
+            margin-bottom: 5px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .prayer-time {
+            font-size: 32px;
+            font-weight: bold;
+            color: #198754;
+            font-variant-numeric: tabular-nums;
+        }
+        
+        .prayer-card.active .prayer-time {
+            color: white;
+        }
+        
+        .prayer-emoji {
+            font-size: 28px;
+        }
+        
+        .next-prayer-badge {
+            background: #ffd700;
+            color: #0f5132;
+            padding: 5px 12px;
+            border-radius: 15px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        
+        .countdown {
+            font-size: 14px;
+            color: #666;
+            margin-top: 5px;
+            font-weight: 500;
+        }
+        
+        .prayer-card.active .countdown {
+            color: rgba(255,255,255,0.9);
+        }
+        
+        .loading {
+            text-align: center;
+            color: white;
+            padding: 50px;
+            font-size: 18px;
+        }
+        
+        .error {
+            background: rgba(255, 107, 107, 0.9);
+            color: white;
+            padding: 20px;
+            border-radius: 15px;
+            text-align: center;
+            margin: 20px 0;
+            backdrop-filter: blur(10px);
+        }
+        
+        .qibla-info {
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 15px;
+            margin-top: 20px;
+            text-align: center;
+            color: white;
+        }
+        
+        .qibla-info .title {
+            font-size: 16px;
+            margin-bottom: 10px;
+            opacity: 0.9;
+        }
+        
+        .qibla-info .direction {
+            font-size: 24px;
+            font-weight: bold;
+        }
+        
+        .refresh-btn {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 60px;
+            height: 60px;
+            background: #198754;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            font-size: 24px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            cursor: pointer;
+            transition: transform 0.2s;
+            z-index: 10;
+        }
+        
+        .refresh-btn:active {
+            transform: scale(0.9);
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
+        .prayer-card.active {
+            animation: pulse 2s infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🕌 Время намазов</h1>
+            <div class="city" id="cityName">Загрузка...</div>
+            <div class="date" id="currentDate"></div>
+        </div>
+        
+        <div id="loading" class="loading">
+            ⏳ Загрузка времени намазов...
+        </div>
+        
+        <div id="content" style="display: none;">
+            <div id="prayerList"></div>
+        </div>
+        
+        <div id="error" class="error" style="display: none;"></div>
+    </div>
+    
+    <button class="refresh-btn" onclick="loadPrayerTimes()" title="Обновить">🔄</button>
+    
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.ready();
+        tg.expand();
+        
+        // Получаем user_id
+        let userId = null;
+        try {
+            const initData = tg.initDataUnsafe;
+            if (initData && initData.user && initData.user.id) {
+                userId = initData.user.id;
+            }
+        } catch (e) {
+            console.log('initData not available');
+        }
+        
+        if (!userId) {
+            const urlParams = new URLSearchParams(window.location.search);
+            userId = urlParams.get('user_id') || window.userIdFromUrl;
+        }
+        
+        // Обновляем дату
+        function updateDate() {
+            const now = new Date();
+            const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+            const dateStr = now.toLocaleDateString('ru-RU', options);
+            document.getElementById('currentDate').textContent = dateStr;
+        }
+        updateDate();
+        setInterval(updateDate, 60000);
+        
+        async function loadPrayerTimes() {
+            if (!userId) {
+                showError('Не удалось определить пользователя');
+                return;
+            }
+            
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('content').style.display = 'none';
+            document.getElementById('error').style.display = 'none';
+            
+            try {
+                const baseUrl = window.location.origin;
+                const response = await fetch(`${baseUrl}/api/prayer-times?user_id=${userId}`);
+                
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.error || 'Ошибка загрузки данных');
+                }
+                
+                const data = await response.json();
+                displayPrayerTimes(data);
+            } catch (error) {
+                console.error('Error loading prayer times:', error);
+                showError('Ошибка загрузки времени намазов: ' + error.message);
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+        
+        function displayPrayerTimes(data) {
+            document.getElementById('content').style.display = 'block';
+            
+            // Обновляем город
+            if (data.city) {
+                document.getElementById('cityName').textContent = data.city;
+            }
+            
+            const prayerList = document.getElementById('prayerList');
+            prayerList.innerHTML = '';
+            
+            const prayers = [
+                { name: 'Фаджр', emoji: '🌅', time: data.times?.Фаджр },
+                { name: 'Восход', emoji: '☀️', time: data.times?.Восход },
+                { name: 'Зухр', emoji: '☀️', time: data.times?.Зухр },
+                { name: 'Аср', emoji: '🌤', time: data.times?.Аср },
+                { name: 'Магриб', emoji: '🌆', time: data.times?.Магриб },
+                { name: 'Иша', emoji: '🌙', time: data.times?.Иша }
+            ];
+            
+            const now = new Date();
+            let nextPrayerIndex = -1;
+            let minDiff = Infinity;
+            
+            prayers.forEach((prayer, index) => {
+                if (!prayer.time) return;
+                
+                const [hours, minutes] = prayer.time.split(':').map(Number);
+                const prayerTime = new Date();
+                prayerTime.setHours(hours, minutes, 0, 0);
+                
+                if (prayerTime < now) {
+                    prayerTime.setDate(prayerTime.getDate() + 1);
+                }
+                
+                const diff = prayerTime - now;
+                if (diff < minDiff && index > 0) { // Пропускаем Восход
+                    minDiff = diff;
+                    nextPrayerIndex = index;
+                }
+            });
+            
+            prayers.forEach((prayer, index) => {
+                if (!prayer.time) return;
+                
+                const card = document.createElement('div');
+                card.className = 'prayer-card';
+                
+                if (index === nextPrayerIndex) {
+                    card.classList.add('active');
+                }
+                
+                const [hours, minutes] = prayer.time.split(':').map(Number);
+                const prayerTime = new Date();
+                prayerTime.setHours(hours, minutes, 0, 0);
+                
+                if (prayerTime < now) {
+                    prayerTime.setDate(prayerTime.getDate() + 1);
+                }
+                
+                const diff = prayerTime - now;
+                const hoursLeft = Math.floor(diff / (1000 * 60 * 60));
+                const minutesLeft = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+                
+                let countdownText = '';
+                if (index === nextPrayerIndex) {
+                    if (hoursLeft > 0) {
+                        countdownText = `через ${hoursLeft}ч ${minutesLeft}м`;
+                    } else {
+                        countdownText = `через ${minutesLeft}м`;
+                    }
+                }
+                
+                card.innerHTML = `
+                    <div class="prayer-info">
+                        <div class="prayer-name">
+                            <span class="prayer-emoji">${prayer.emoji}</span>
+                            <span>${prayer.name}</span>
+                            ${index === nextPrayerIndex ? '<span class="next-prayer-badge">Следующий</span>' : ''}
+                        </div>
+                        ${countdownText ? `<div class="countdown">${countdownText}</div>` : ''}
+                    </div>
+                    <div class="prayer-time">${prayer.time}</div>
+                `;
+                
+                prayerList.appendChild(card);
+            });
+            
+            // Обновляем каждую минуту
+            setTimeout(() => {
+                loadPrayerTimes();
+            }, 60000);
+        }
+        
+        function showError(message) {
+            document.getElementById('error').style.display = 'block';
+            document.getElementById('error').textContent = message;
+        }
+        
+        // Загружаем при открытии
+        loadPrayerTimes();
+    </script>
+</body>
+</html>
+

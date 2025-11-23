@@ -14,26 +14,55 @@
         
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #0f5132 0%, #198754 50%, #0f5132 100%);
             min-height: 100vh;
             padding: 20px;
             color: #333;
+            position: relative;
+            overflow-x: hidden;
+        }
+        
+        /* Исламский орнамент */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-image: 
+                radial-gradient(circle at 20% 50%, rgba(255,255,255,0.03) 0%, transparent 50%),
+                radial-gradient(circle at 80% 50%, rgba(255,255,255,0.03) 0%, transparent 50%);
+            pointer-events: none;
+            z-index: 0;
         }
         
         .container {
             max-width: 100%;
             margin: 0 auto;
+            position: relative;
+            z-index: 1;
         }
         
         .header {
             text-align: center;
             color: white;
             margin-bottom: 30px;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
         }
         
         .header h1 {
-            font-size: 28px;
+            font-size: 32px;
             margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .header p {
+            font-size: 16px;
+            opacity: 0.9;
         }
         
         .stats-card {
@@ -42,6 +71,7 @@
             padding: 25px;
             margin-bottom: 20px;
             box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            border-left: 5px solid #198754;
         }
         
         .stat-row {
@@ -64,7 +94,7 @@
         .stat-value {
             font-size: 24px;
             font-weight: bold;
-            color: #667eea;
+            color: #198754;
         }
         
         .progress-bar {
@@ -78,7 +108,7 @@
         
         .progress-fill {
             height: 100%;
-            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(90deg, #198754 0%, #0f5132 100%);
             border-radius: 15px;
             transition: width 0.5s ease;
             display: flex;
@@ -90,13 +120,14 @@
         }
         
         .streak-card {
-            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-            color: white;
+            background: linear-gradient(135deg, #ffd700 0%, #ffed4e 100%);
+            color: #0f5132;
             border-radius: 20px;
             padding: 25px;
             text-align: center;
             margin-bottom: 20px;
             box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            border: 3px solid rgba(255,255,255,0.3);
         }
         
         .streak-number {
@@ -128,7 +159,7 @@
         .prayer-count {
             font-size: 24px;
             font-weight: bold;
-            color: #667eea;
+            color: #198754;
         }
         
         .loading {
@@ -139,12 +170,13 @@
         }
         
         .error {
-            background: #ff6b6b;
+            background: rgba(255, 107, 107, 0.9);
             color: white;
             padding: 20px;
             border-radius: 15px;
             text-align: center;
             margin: 20px 0;
+            backdrop-filter: blur(10px);
         }
         
         .chart-container {
@@ -184,7 +216,7 @@
         
         .chart-fill {
             height: 100%;
-            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(90deg, #198754 0%, #0f5132 100%);
             border-radius: 10px;
             transition: width 0.5s ease;
         }
@@ -194,7 +226,7 @@
             text-align: right;
             font-size: 12px;
             font-weight: bold;
-            color: #667eea;
+            color: #198754;
         }
     </style>
 </head>

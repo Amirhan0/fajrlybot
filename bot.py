@@ -239,7 +239,18 @@ class IslamicBot:
                 if prayer != 'timezone':  # Пропускаем часовой пояс в списке
                     message += f"{prayer}: {time}\n"
             
-            await update.message.reply_text(message)
+            # Получаем URL для Mini App времени намазов
+            webapp_url = os.getenv('RENDER_EXTERNAL_URL', 'http://localhost:8080')
+            if not webapp_url.startswith('http'):
+                webapp_url = f'https://{webapp_url}'
+            webapp_url = f"{webapp_url.rstrip('/')}/prayer-times"
+            
+            keyboard = [
+                [InlineKeyboardButton("📱 Открыть интерактивное время намазов", web_app=WebAppInfo(url=webapp_url))]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(message, reply_markup=reply_markup)
         else:
             await update.message.reply_text(
                 "❌ Не удалось получить время намазов. Проверьте правильность названия города."
@@ -966,15 +977,13 @@ class IslamicBot:
             )
     
     async def webapp_handler(self, request):
-        """Обработчик для Mini App"""
+        """Обработчик для Mini App статистики"""
         try:
-            # Получаем user_id из query параметров для передачи в Mini App
             user_id = request.query.get('user_id', '')
             
             with open('static/index.html', 'r', encoding='utf-8') as f:
                 content = f.read()
             
-            # Добавляем user_id в URL если есть
             if user_id:
                 content = content.replace(
                     'loadStats();',
@@ -992,6 +1001,103 @@ class IslamicBot:
             logger.error(f"Ошибка загрузки Mini App: {e}")
             return Response(text="Ошибка загрузки", status=500)
     
+    async def prayer_times_webapp_handler(self, request):
+        """Обработчик для Mini App времени намазов"""
+        try:
+            user_id = request.query.get('user_id', '')
+            
+            with open('static/prayer_times.html', 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            if user_id:
+                content = content.replace(
+                    'loadPrayerTimes();',
+                    f'window.userIdFromUrl = {user_id}; loadPrayerTimes();'
+                )
+            
+            return Response(
+                text=content,
+                content_type='text/html',
+                headers={'Access-Control-Allow-Origin': '*'}
+            )
+        except FileNotFoundError:
+            return Response(text="Mini App не найден", status=404)
+        except Exception as e:
+            logger.error(f"Ошибка загрузки Mini App: {e}")
+            return Response(text="Ошибка загрузки", status=500)
+    
+    async def prayer_times_api_handler(self, request):
+        """API endpoint для получения времени намазов"""
+        try:
+            user_id = request.query.get('user_id')
+            if not user_id:
+                return Response(
+                    text='{"error": "user_id required"}',
+                    status=400,
+                    content_type='application/json',
+                    headers={'Access-Control-Allow-Origin': '*'}
+                )
+            
+            user_id = int(user_id)
+            user = await self.db.get_user(user_id)
+            
+            if not user or not user.get('city'):
+                return Response(
+                    text='{"error": "City not set"}',
+                    status=400,
+                    content_type='application/json',
+                    headers={'Access-Control-Allow-Origin': '*'}
+                )
+            
+            city = user['city']
+            country = user.get('country', 'Kazakhstan')
+            
+            times = await self.get_prayer_times(city, country)
+            
+            if not times:
+                return Response(
+                    text='{"error": "Failed to get prayer times"}',
+                    status=500,
+                    content_type='application/json',
+                    headers={'Access-Control-Allow-Origin': '*'}
+                )
+            
+            response_data = {
+                'city': city,
+                'country': country,
+                'times': {
+                    'Фаджр': times.get('Фаджр'),
+                    'Восход': times.get('Восход'),
+                    'Зухр': times.get('Зухр'),
+                    'Аср': times.get('Аср'),
+                    'Магриб': times.get('Магриб'),
+                    'Иша': times.get('Иша')
+                },
+                'timezone': times.get('timezone', 'Asia/Almaty')
+            }
+            
+            return Response(
+                text=json.dumps(response_data, ensure_ascii=False),
+                status=200,
+                content_type='application/json',
+                headers={'Access-Control-Allow-Origin': '*'}
+            )
+        except ValueError:
+            return Response(
+                text='{"error": "Invalid user_id"}',
+                status=400,
+                content_type='application/json',
+                headers={'Access-Control-Allow-Origin': '*'}
+            )
+        except Exception as e:
+            logger.error(f"Ошибка в prayer times API: {e}")
+            return Response(
+                text='{"error": "Internal server error"}',
+                status=500,
+                content_type='application/json',
+                headers={'Access-Control-Allow-Origin': '*'}
+            )
+    
     async def start_http_server(self):
         """Запуск HTTP сервера для health check и Mini App"""
         try:
@@ -1001,7 +1107,9 @@ class IslamicBot:
             app.router.add_get('/health', self.health_check_handler)
             app.router.add_get('/healtz', self.health_check_handler)
             app.router.add_get('/webapp', self.webapp_handler)
+            app.router.add_get('/prayer-times', self.prayer_times_webapp_handler)
             app.router.add_get('/api/stats', self.stats_api_handler)
+            app.router.add_get('/api/prayer-times', self.prayer_times_api_handler)
             
             runner = web.AppRunner(app)
             await runner.setup()
@@ -1011,8 +1119,8 @@ class IslamicBot:
             self.http_server = runner
             logger.info(f"✅ HTTP сервер запущен на 0.0.0.0:{port}")
             logger.info(f"📍 Health check endpoints: /, /health, /healtz")
-            logger.info(f"📍 Mini App: /webapp")
-            logger.info(f"📍 Stats API: /api/stats")
+            logger.info(f"📍 Mini Apps: /webapp (статистика), /prayer-times (время намазов)")
+            logger.info(f"📍 APIs: /api/stats, /api/prayer-times")
         except Exception as e:
             logger.error(f"❌ Ошибка при запуске HTTP сервера: {e}")
     
