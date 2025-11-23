@@ -228,7 +228,21 @@ class IslamicBot:
         country = user['country']
         
         await self.db.update_last_active(user_id)
-        await update.message.reply_text("⏳ Получаю время намазов...")
+        
+        # Получаем URL для Mini App времени намазов заранее
+        webapp_url = os.getenv('RENDER_EXTERNAL_URL', 'http://localhost:8080')
+        if not webapp_url.startswith('http'):
+            webapp_url = f'https://{webapp_url}'
+        webapp_url = f"{webapp_url.rstrip('/')}/prayer-times?user_id={user_id}"
+        
+        logger.info(f"Mini App URL для времени намазов: {webapp_url}")
+        
+        # Отправляем сообщение с кнопкой сразу
+        loading_keyboard = [
+            [InlineKeyboardButton("📱 Открыть интерактивное время намазов", web_app=WebAppInfo(url=webapp_url))]
+        ]
+        loading_markup = InlineKeyboardMarkup(loading_keyboard)
+        loading_msg = await update.message.reply_text("⏳ Получаю время намазов...", reply_markup=loading_markup)
         
         times = await self.get_prayer_times(city, country)
         
@@ -239,21 +253,23 @@ class IslamicBot:
                 if prayer != 'timezone':  # Пропускаем часовой пояс в списке
                     message += f"{prayer}: {time}\n"
             
-            # Получаем URL для Mini App времени намазов
-            webapp_url = os.getenv('RENDER_EXTERNAL_URL', 'http://localhost:8080')
-            if not webapp_url.startswith('http'):
-                webapp_url = f'https://{webapp_url}'
-            webapp_url = f"{webapp_url.rstrip('/')}/prayer-times"
-            
             keyboard = [
                 [InlineKeyboardButton("📱 Открыть интерактивное время намазов", web_app=WebAppInfo(url=webapp_url))]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            await update.message.reply_text(message, reply_markup=reply_markup)
+            # Обновляем сообщение с временами и кнопкой
+            await loading_msg.edit_text(message, reply_markup=reply_markup)
         else:
-            await update.message.reply_text(
-                "❌ Не удалось получить время намазов. Проверьте правильность названия города."
+            # Даже при ошибке показываем кнопку Mini App
+            error_keyboard = [
+                [InlineKeyboardButton("📱 Открыть интерактивное время намазов", web_app=WebAppInfo(url=webapp_url))]
+            ]
+            error_markup = InlineKeyboardMarkup(error_keyboard)
+            await loading_msg.edit_text(
+                "❌ Не удалось получить время намазов. Проверьте правильность названия города.\n\n"
+                "Попробуйте открыть интерактивное время намазов:",
+                reply_markup=error_markup
             )
 
     def get_next_prayer(self, times):
@@ -560,6 +576,14 @@ class IslamicBot:
         user_id = update.effective_user.id
         stats = await self.db.get_prayer_stats(user_id, days=30)
         
+        # Получаем URL для Mini App заранее
+        webapp_url = os.getenv('RENDER_EXTERNAL_URL', 'http://localhost:8080')
+        if not webapp_url.startswith('http'):
+            webapp_url = f'https://{webapp_url}'
+        webapp_url = f"{webapp_url.rstrip('/')}/webapp?user_id={user_id}"
+        
+        logger.info(f"Mini App URL для статистики: {webapp_url}")
+        
         if not stats:
             keyboard = [
                 [
@@ -572,6 +596,9 @@ class IslamicBot:
                 ],
                 [
                     InlineKeyboardButton("🌙 Иша", callback_data="mark_prayer_Иша")
+                ],
+                [
+                    InlineKeyboardButton("📱 Интерактивная статистика", web_app=WebAppInfo(url=webapp_url))
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -608,12 +635,6 @@ class IslamicBot:
         message += "\n📈 Последние 7 дней:\n"
         last_7_days = await self.get_last_7_days_chart(user_id)
         message += last_7_days
-        
-        # Получаем URL для Mini App
-        webapp_url = os.getenv('RENDER_EXTERNAL_URL', 'http://localhost:8080')
-        if not webapp_url.startswith('http'):
-            webapp_url = f'https://{webapp_url}'
-        webapp_url = f"{webapp_url.rstrip('/')}/webapp"
         
         keyboard = [
             [
